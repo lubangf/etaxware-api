@@ -9723,7 +9723,7 @@ Class Utilities{
 	    ));
 	    
 	    $this->db = $db;	
-	    $logger = new Log('util.log');
+	    $logger = new SmartLogger('util.log', 'util-trace.log');
 	    $this->logger = $logger; 
 	    
 	    $data = array();

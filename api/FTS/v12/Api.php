@@ -6933,7 +6933,7 @@ Class Api{
         
         $this->db = $db;
         
-        $logger = new Log('api.log');
+        $logger = new SmartLogger('api.log', 'api-trace.log');
         $this->logger = $logger;
         
         $data = array();
