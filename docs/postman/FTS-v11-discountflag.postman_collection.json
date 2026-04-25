@@ -1,0 +1,364 @@
+{
+  "info": {
+    "_postman_id": "6e3f7f68-4f6b-4fd2-9f5e-2116ac2f8a35",
+    "name": "eTaxWare API - FTS v11 DiscountFlag Validation",
+    "description": "Postman collection for validating explicit INVENTORIES.DISCOUNTFLAG propagation for uploadinvoice, uploadcreditnote, and uploaddebitnote in FTS v11.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Invoice - uploadinvoice (DISCOUNTFLAG=1)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/uploadinvoice?apikey={{apikey}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "uploadinvoice"
+          ],
+          "query": [
+            {
+              "key": "apikey",
+              "value": "{{apikey}}"
+            }
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"ORGTIN\": \"{{org_tin}}\",\n  \"APIKEY\": \"{{apikey}}\",\n  \"VERSION\": \"{{version}}\",\n  \"ERPUSER\": \"{{erp_user}}\",\n  \"VOUCHERTYPE\": \"Sales\",\n  \"VOUCHERTYPENAME\": \"Sales Invoice\",\n  \"VOUCHERNUMBER\": \"INV-DF-{{ts}}\",\n  \"VOUCHERREF\": \"INV-REF-{{ts}}\",\n  \"INDUSTRYCODE\": \"101\",\n  \"CURRENCY\": \"UGX\",\n  \"BUYERTIN\": \"{{buyer_tin}}\",\n  \"BUYERNINBRN\": \"\",\n  \"BUYERPASSPORTNUM\": \"\",\n  \"BUYERLEGALNAME\": \"POSTMAN BUYER\",\n  \"BUSINESSNAME\": \"POSTMAN BUYER\",\n  \"BUYERADDRESS\": \"Kampala\",\n  \"MOBILEPHONE\": \"0700000000\",\n  \"BUYERLINEPHONE\": \"\",\n  \"BUYEREMAIL\": \"buyer@example.com\",\n  \"BUYERPLACEOFBUSI\": \"Kampala\",\n  \"BUYERTYPE\": \"1\",\n  \"BUYERCITIZENSHIP\": \"1\",\n  \"BUYERSECTOR\": \"1\",\n  \"BUYERREFERENCENO\": \"\",\n  \"REMARKS\": \"Postman discount flag invoice test\",\n  \"NONRESIDENTFLAG\": \"0\",\n  \"PROJECTID\": \"\",\n  \"PROJECTNAME\": \"\",\n  \"DELIVERYTERMCODE\": \"101\",\n  \"PRICEVATINCLUSIVE\": \"YES\",\n  \"WINDOWSUSER\": \"{{windows_user}}\",\n  \"IPADDRESS\": \"{{ip_address}}\",\n  \"MACADDRESS\": \"{{mac_address}}\",\n  \"SYSTEMNAME\": \"{{system_name}}\",\n  \"INVENTORIES\": [\n    {\n      \"PRODUCTCODE\": \"{{product_code}}\",\n      \"QTY\": \"1\",\n      \"RATE\": \"100000\",\n      \"AMOUNT\": \"100000\",\n      \"TAXRATE\": \"0.18\",\n      \"DISCOUNTPCT\": \"10\",\n      \"DISCOUNT\": \"10000\",\n      \"DISCOUNTFLAG\": \"1\"\n    }\n  ],\n  \"PAYMENTS\": [\n    {\n      \"PAYMENTMODE\": \"101\",\n      \"AMOUNT\": \"90000\"\n    }\n  ]\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP status is 200', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "pm.test('responseCode exists', function () {",
+              "  const data = pm.response.json();",
+              "  pm.expect(data.response.responseCode).to.exist;",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Credit Note - uploadcreditnote (DISCOUNTFLAG=2)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/uploadcreditnote?apikey={{apikey}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "uploadcreditnote"
+          ],
+          "query": [
+            {
+              "key": "apikey",
+              "value": "{{apikey}}"
+            }
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"ORGTIN\": \"{{org_tin}}\",\n  \"APIKEY\": \"{{apikey}}\",\n  \"VERSION\": \"{{version}}\",\n  \"ERPUSER\": \"{{erp_user}}\",\n  \"VOUCHERTYPE\": \"Credit\",\n  \"VOUCHERTYPENAME\": \"Credit Note\",\n  \"VOUCHERNUMBER\": \"CN-DF-{{ts}}\",\n  \"VOUCHERREF\": \"CN-REF-{{ts}}\",\n  \"ORIVOUCHERNUMBER\": \"{{original_invoice_number}}\",\n  \"INDUSTRYCODE\": \"101\",\n  \"CURRENCY\": \"UGX\",\n  \"BUYERTIN\": \"{{buyer_tin}}\",\n  \"BUYERNINBRN\": \"\",\n  \"BUYERPASSPORTNUM\": \"\",\n  \"BUYERLEGALNAME\": \"POSTMAN BUYER\",\n  \"BUSINESSNAME\": \"POSTMAN BUYER\",\n  \"BUYERADDRESS\": \"Kampala\",\n  \"MOBILEPHONE\": \"0700000000\",\n  \"BUYERLINEPHONE\": \"\",\n  \"BUYEREMAIL\": \"buyer@example.com\",\n  \"BUYERPLACEOFBUSI\": \"Kampala\",\n  \"BUYERTYPE\": \"1\",\n  \"BUYERCITIZENSHIP\": \"1\",\n  \"BUYERSECTOR\": \"1\",\n  \"BUYERREFERENCENO\": \"\",\n  \"NONRESIDENTFLAG\": \"0\",\n  \"PROJECTID\": \"\",\n  \"PROJECTNAME\": \"\",\n  \"DELIVERYTERMCODE\": \"101\",\n  \"PRICEVATINCLUSIVE\": \"YES\",\n  \"WINDOWSUSER\": \"{{windows_user}}\",\n  \"IPADDRESS\": \"{{ip_address}}\",\n  \"MACADDRESS\": \"{{mac_address}}\",\n  \"SYSTEMNAME\": \"{{system_name}}\",\n  \"REASONS\": [\n    {\n      \"REASONCODE\": \"101\",\n      \"REASON\": \"Postman validation\"\n    }\n  ],\n  \"INVENTORIES\": [\n    {\n      \"PRODUCTCODE\": \"{{product_code}}\",\n      \"QTY\": \"1\",\n      \"RATE\": \"100000\",\n      \"AMOUNT\": \"100000\",\n      \"TAXRATE\": \"0.18\",\n      \"DISCOUNTPCT\": \"0\",\n      \"DISCOUNT\": \"0\",\n      \"DISCOUNTFLAG\": \"2\"\n    }\n  ],\n  \"PAYMENTS\": [\n    {\n      \"PAYMENTMODE\": \"101\",\n      \"AMOUNT\": \"100000\"\n    }\n  ]\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP status is 200', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "pm.test('responseCode exists', function () {",
+              "  const data = pm.response.json();",
+              "  pm.expect(data.response.responseCode).to.exist;",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Debit Note - uploaddebitnote (DISCOUNTFLAG=1)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/uploaddebitnote?apikey={{apikey}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "uploaddebitnote"
+          ],
+          "query": [
+            {
+              "key": "apikey",
+              "value": "{{apikey}}"
+            }
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"ORGTIN\": \"{{org_tin}}\",\n  \"APIKEY\": \"{{apikey}}\",\n  \"VERSION\": \"{{version}}\",\n  \"ERPUSER\": \"{{erp_user}}\",\n  \"VOUCHERTYPE\": \"Debit\",\n  \"VOUCHERTYPENAME\": \"Debit Note\",\n  \"VOUCHERNUMBER\": \"DN-DF-{{ts}}\",\n  \"VOUCHERREF\": \"DN-REF-{{ts}}\",\n  \"ORIVOUCHERNUMBER\": \"{{original_invoice_number}}\",\n  \"INDUSTRYCODE\": \"101\",\n  \"CURRENCY\": \"UGX\",\n  \"BUYERTIN\": \"{{buyer_tin}}\",\n  \"BUYERNINBRN\": \"\",\n  \"BUYERPASSPORTNUM\": \"\",\n  \"BUYERLEGALNAME\": \"POSTMAN BUYER\",\n  \"BUSINESSNAME\": \"POSTMAN BUYER\",\n  \"BUYERADDRESS\": \"Kampala\",\n  \"MOBILEPHONE\": \"0700000000\",\n  \"BUYERLINEPHONE\": \"\",\n  \"BUYEREMAIL\": \"buyer@example.com\",\n  \"BUYERPLACEOFBUSI\": \"Kampala\",\n  \"BUYERTYPE\": \"1\",\n  \"BUYERCITIZENSHIP\": \"1\",\n  \"BUYERSECTOR\": \"1\",\n  \"BUYERREFERENCENO\": \"\",\n  \"PRICEVATINCLUSIVE\": \"YES\",\n  \"REASONS\": [\n    {\n      \"REASONCODE\": \"101\",\n      \"REASON\": \"Postman validation\"\n    }\n  ],\n  \"WINDOWSUSER\": \"{{windows_user}}\",\n  \"IPADDRESS\": \"{{ip_address}}\",\n  \"MACADDRESS\": \"{{mac_address}}\",\n  \"SYSTEMNAME\": \"{{system_name}}\",\n  \"INVENTORIES\": [\n    {\n      \"PRODUCTCODE\": \"{{product_code}}\",\n      \"QTY\": \"1\",\n      \"RATE\": \"100000\",\n      \"AMOUNT\": \"100000\",\n      \"TAXRATE\": \"0.18\",\n      \"DISCOUNTPCT\": \"5\",\n      \"DISCOUNT\": \"5000\",\n      \"DISCOUNTFLAG\": \"1\"\n    }\n  ],\n  \"PAYMENTS\": [\n    {\n      \"PAYMENTMODE\": \"101\",\n      \"AMOUNT\": \"95000\"\n    }\n  ]\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP status is 200', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "pm.test('responseCode exists', function () {",
+              "  const data = pm.response.json();",
+              "  pm.expect(data.response.responseCode).to.exist;",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Negative - uploadinvoice (DISCOUNT present, DISCOUNTFLAG missing)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/uploadinvoice?apikey={{apikey}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "uploadinvoice"
+          ],
+          "query": [
+            {
+              "key": "apikey",
+              "value": "{{apikey}}"
+            }
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"ORGTIN\": \"{{org_tin}}\",\n  \"APIKEY\": \"{{apikey}}\",\n  \"VERSION\": \"{{version}}\",\n  \"ERPUSER\": \"{{erp_user}}\",\n  \"VOUCHERTYPE\": \"Sales\",\n  \"VOUCHERTYPENAME\": \"Sales Invoice\",\n  \"VOUCHERNUMBER\": \"INV-DF-NEG-{{ts}}\",\n  \"VOUCHERREF\": \"INV-REF-NEG-{{ts}}\",\n  \"INDUSTRYCODE\": \"101\",\n  \"CURRENCY\": \"UGX\",\n  \"BUYERTIN\": \"{{buyer_tin}}\",\n  \"BUYERNINBRN\": \"\",\n  \"BUYERPASSPORTNUM\": \"\",\n  \"BUYERLEGALNAME\": \"POSTMAN BUYER\",\n  \"BUSINESSNAME\": \"POSTMAN BUYER\",\n  \"BUYERADDRESS\": \"Kampala\",\n  \"MOBILEPHONE\": \"0700000000\",\n  \"BUYERLINEPHONE\": \"\",\n  \"BUYEREMAIL\": \"buyer@example.com\",\n  \"BUYERPLACEOFBUSI\": \"Kampala\",\n  \"BUYERTYPE\": \"1\",\n  \"BUYERCITIZENSHIP\": \"1\",\n  \"BUYERSECTOR\": \"1\",\n  \"BUYERREFERENCENO\": \"\",\n  \"REMARKS\": \"Postman negative test - missing discount flag\",\n  \"NONRESIDENTFLAG\": \"0\",\n  \"PROJECTID\": \"\",\n  \"PROJECTNAME\": \"\",\n  \"DELIVERYTERMCODE\": \"101\",\n  \"PRICEVATINCLUSIVE\": \"YES\",\n  \"WINDOWSUSER\": \"{{windows_user}}\",\n  \"IPADDRESS\": \"{{ip_address}}\",\n  \"MACADDRESS\": \"{{mac_address}}\",\n  \"SYSTEMNAME\": \"{{system_name}}\",\n  \"INVENTORIES\": [\n    {\n      \"PRODUCTCODE\": \"{{product_code}}\",\n      \"QTY\": \"1\",\n      \"RATE\": \"100000\",\n      \"AMOUNT\": \"100000\",\n      \"TAXRATE\": \"0.18\",\n      \"DISCOUNTPCT\": \"10\",\n      \"DISCOUNT\": \"10000\"\n    }\n  ],\n  \"PAYMENTS\": [\n    {\n      \"PAYMENTMODE\": \"101\",\n      \"AMOUNT\": \"90000\"\n    }\n  ]\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP status is 200', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "pm.test('responseCode is -999 for missing DISCOUNTFLAG', function () {",
+              "  const data = pm.response.json();",
+              "  pm.expect(data.response.responseCode).to.eql('-999');",
+              "});",
+              "pm.test('response message references DISCOUNTFLAG', function () {",
+              "  const data = pm.response.json();",
+              "  pm.expect(String(data.response.responseMessage)).to.include('DISCOUNTFLAG');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Negative - uploaddebitnote (ORIVOUCHERNUMBER missing)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/uploaddebitnote?apikey={{apikey}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "uploaddebitnote"
+          ],
+          "query": [
+            {
+              "key": "apikey",
+              "value": "{{apikey}}"
+            }
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"ORGTIN\": \"{{org_tin}}\",\n  \"APIKEY\": \"{{apikey}}\",\n  \"VERSION\": \"{{version}}\",\n  \"ERPUSER\": \"{{erp_user}}\",\n  \"VOUCHERTYPE\": \"Debit\",\n  \"VOUCHERTYPENAME\": \"Debit Note\",\n  \"VOUCHERNUMBER\": \"DN-NEG-ORI-{{ts}}\",\n  \"VOUCHERREF\": \"DN-REF-NEG-{{ts}}\",\n  \"ORIVOUCHERNUMBER\": \"\",\n  \"INDUSTRYCODE\": \"101\",\n  \"CURRENCY\": \"UGX\",\n  \"BUYERTIN\": \"{{buyer_tin}}\",\n  \"BUYERNINBRN\": \"\",\n  \"BUYERPASSPORTNUM\": \"\",\n  \"BUYERLEGALNAME\": \"POSTMAN BUYER\",\n  \"BUSINESSNAME\": \"POSTMAN BUYER\",\n  \"BUYERADDRESS\": \"Kampala\",\n  \"MOBILEPHONE\": \"0700000000\",\n  \"BUYERLINEPHONE\": \"\",\n  \"BUYEREMAIL\": \"buyer@example.com\",\n  \"BUYERPLACEOFBUSI\": \"Kampala\",\n  \"BUYERTYPE\": \"1\",\n  \"BUYERCITIZENSHIP\": \"1\",\n  \"BUYERSECTOR\": \"1\",\n  \"BUYERREFERENCENO\": \"\",\n  \"NONRESIDENTFLAG\": \"0\",\n  \"PROJECTID\": \"\",\n  \"PROJECTNAME\": \"\",\n  \"DELIVERYTERMCODE\": \"101\",\n  \"PRICEVATINCLUSIVE\": \"YES\",\n  \"REASONS\": [\n    {\n      \"REASONCODE\": \"101\",\n      \"REASON\": \"Postman validation\"\n    }\n  ],\n  \"WINDOWSUSER\": \"{{windows_user}}\",\n  \"IPADDRESS\": \"{{ip_address}}\",\n  \"MACADDRESS\": \"{{mac_address}}\",\n  \"SYSTEMNAME\": \"{{system_name}}\",\n  \"INVENTORIES\": [\n    {\n      \"PRODUCTCODE\": \"{{product_code}}\",\n      \"QTY\": \"1\",\n      \"RATE\": \"100000\",\n      \"AMOUNT\": \"100000\",\n      \"TAXRATE\": \"0.18\",\n      \"DISCOUNTPCT\": \"0\",\n      \"DISCOUNT\": \"0\",\n      \"DISCOUNTFLAG\": \"2\"\n    }\n  ],\n  \"PAYMENTS\": [\n    {\n      \"PAYMENTMODE\": \"101\",\n      \"AMOUNT\": \"100000\"\n    }\n  ]\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP status is 200', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "pm.test('responseCode is -999 for missing ORIVOUCHERNUMBER', function () {",
+              "  const data = pm.response.json();",
+              "  pm.expect(data.response.responseCode).to.eql('-999');",
+              "});",
+              "pm.test('response message mentions original invoice number', function () {",
+              "  const data = pm.response.json();",
+              "  pm.expect(String(data.response.responseMessage)).to.include('original invoice number');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Negative - uploaddebitnote (REASONS missing)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/uploaddebitnote?apikey={{apikey}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "uploaddebitnote"
+          ],
+          "query": [
+            {
+              "key": "apikey",
+              "value": "{{apikey}}"
+            }
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"ORGTIN\": \"{{org_tin}}\",\n  \"APIKEY\": \"{{apikey}}\",\n  \"VERSION\": \"{{version}}\",\n  \"ERPUSER\": \"{{erp_user}}\",\n  \"VOUCHERTYPE\": \"Debit\",\n  \"VOUCHERTYPENAME\": \"Debit Note\",\n  \"VOUCHERNUMBER\": \"DN-NEG-RSN-{{ts}}\",\n  \"VOUCHERREF\": \"DN-REF-NEG-RSN-{{ts}}\",\n  \"ORIVOUCHERNUMBER\": \"{{original_invoice_number}}\",\n  \"INDUSTRYCODE\": \"101\",\n  \"CURRENCY\": \"UGX\",\n  \"BUYERTIN\": \"{{buyer_tin}}\",\n  \"BUYERNINBRN\": \"\",\n  \"BUYERPASSPORTNUM\": \"\",\n  \"BUYERLEGALNAME\": \"POSTMAN BUYER\",\n  \"BUSINESSNAME\": \"POSTMAN BUYER\",\n  \"BUYERADDRESS\": \"Kampala\",\n  \"MOBILEPHONE\": \"0700000000\",\n  \"BUYERLINEPHONE\": \"\",\n  \"BUYEREMAIL\": \"buyer@example.com\",\n  \"BUYERPLACEOFBUSI\": \"Kampala\",\n  \"BUYERTYPE\": \"1\",\n  \"BUYERCITIZENSHIP\": \"1\",\n  \"BUYERSECTOR\": \"1\",\n  \"BUYERREFERENCENO\": \"\",\n  \"NONRESIDENTFLAG\": \"0\",\n  \"PROJECTID\": \"\",\n  \"PROJECTNAME\": \"\",\n  \"DELIVERYTERMCODE\": \"101\",\n  \"PRICEVATINCLUSIVE\": \"YES\",\n  \"WINDOWSUSER\": \"{{windows_user}}\",\n  \"IPADDRESS\": \"{{ip_address}}\",\n  \"MACADDRESS\": \"{{mac_address}}\",\n  \"SYSTEMNAME\": \"{{system_name}}\",\n  \"INVENTORIES\": [\n    {\n      \"PRODUCTCODE\": \"{{product_code}}\",\n      \"QTY\": \"1\",\n      \"RATE\": \"100000\",\n      \"AMOUNT\": \"100000\",\n      \"TAXRATE\": \"0.18\",\n      \"DISCOUNTPCT\": \"0\",\n      \"DISCOUNT\": \"0\",\n      \"DISCOUNTFLAG\": \"2\"\n    }\n  ],\n  \"PAYMENTS\": [\n    {\n      \"PAYMENTMODE\": \"101\",\n      \"AMOUNT\": \"100000\"\n    }\n  ]\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP status is 200', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "pm.test('responseCode is -999 for missing REASONS', function () {",
+              "  const data = pm.response.json();",
+              "  pm.expect(data.response.responseCode).to.eql('-999');",
+              "});",
+              "pm.test('response message mentions reason', function () {",
+              "  const data = pm.response.json();",
+              "  pm.expect(String(data.response.responseMessage)).to.include('No reason was supplied');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost/etaxware-api"
+    },
+    {
+      "key": "apikey",
+      "value": ""
+    },
+    {
+      "key": "org_tin",
+      "value": ""
+    },
+    {
+      "key": "version",
+      "value": ""
+    },
+    {
+      "key": "erp_user",
+      "value": ""
+    },
+    {
+      "key": "buyer_tin",
+      "value": ""
+    },
+    {
+      "key": "original_invoice_number",
+      "value": ""
+    },
+    {
+      "key": "product_code",
+      "value": ""
+    },
+    {
+      "key": "windows_user",
+      "value": "POSTMAN"
+    },
+    {
+      "key": "ip_address",
+      "value": "127.0.0.1"
+    },
+    {
+      "key": "mac_address",
+      "value": "00-00-00-00-00-00"
+    },
+    {
+      "key": "system_name",
+      "value": "POSTMAN"
+    },
+    {
+      "key": "ts",
+      "value": "{{$timestamp}}"
+    }
+  ]
+}

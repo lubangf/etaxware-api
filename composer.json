@@ -1,0 +1,12 @@
+{
+	"require" : {
+		"bcosca/fatfree-core" : "^3.6",
+		"ikkez/f3-fal" : "^0.7.2",
+		"ikkez/f3-sheet" : "^0.4.1",
+		"setasign/fpdi" : "^2.3",
+		"tecnickcom/tcpdf" : "^6.3",
+		"setasign/fpdf" : "^1.8",
+		"phpmailer/phpmailer" : "^6.1",
+		"quickbooks/v3-php-sdk": ">=*"
+	}
+}
