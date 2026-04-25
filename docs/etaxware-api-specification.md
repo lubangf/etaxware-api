@@ -6,6 +6,8 @@ Last updated: 2026-04-25
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 2.0.8 | 2026-04-25 | Added consolidated error-code glossary with meanings, typical source areas, and interpretation notes for integrators/support teams. |
+| 2.0.7 | 2026-04-25 | Added business glossary for onboarding and shared business-language alignment between ERP, eTaxWare, and EFRIS users. |
 | 2.0.6 | 2026-04-25 | Added v12 mapping normalization across stock and persistence flows: mapped stock-in/out and adjustment type values before outbound calls and local logs, mapped stock transfer branch/product persistence values, and mapped persisted credit-note `currency`, `invoiceindustrycode`, and `reasoncode`. |
 | 2.0.5 | 2026-04-25 | Applied stock-in unit-price hardening: resolve request/product pricing (`UNITPRICE` -> `purchaseprice` -> `unitprice`) and return `659` when unresolved. |
 | 2.0.4 | 2026-04-25 | Removed stock-out unit price fallback to `1`; stock-out now resolves product pricing (`purchaseprice`/`unitprice`) or returns explicit pricing error. |
@@ -28,6 +30,48 @@ This guide documents the API endpoints in the etaxware-api service.
 - Utility adapter: `util/{adapter}/Utilities.php`
 - Protocol: JSON over HTTP
 - Route methods: POST only
+
+### 1.1 Business Context
+
+etaxware-api is the ERP-facing integration layer for eTaxWare tax operations. Its business role is to translate ERP transactions into compliant URA EFRIS interactions while preserving ERP identifiers and operational auditability.
+
+Business outcomes supported by this API:
+
+- Revenue compliance: submits and reconciles invoices, credit notes, debit notes, and stock movements against EFRIS requirements.
+- Operational continuity: allows ERP users to keep their native voucher/journal processes while enforcing tax-platform rules.
+- Data consistency: stores and normalizes mapped business values (for example branch, product, stock type, adjustment type, currency, reason, industry) to reduce integration drift between ERP and EFRIS domains.
+- Traceability and supportability: captures audit metadata (`ERPUSER`, `WINDOWSUSER`, `IPADDRESS`, `MACADDRESS`, `SYSTEMNAME`) for troubleshooting and compliance evidence.
+
+### 1.2 Business Operating Model
+
+This API operates as one entry point in a shared business platform:
+
+- `etaxware-api`: machine-to-machine adapter used by ERP systems.
+- `etaxware`: browser-facing operational application used by internal users.
+- Shared persistence: both runtimes use the same `etaxware` database model for document lifecycle and reference data.
+
+Practical implications for integrators:
+
+- Most transaction failures are business-level validations returned in the response envelope while HTTP remains `200`.
+- Successful integrations depend on both technical auth fields and business master-data readiness (product, branch, tax, reason, and mapping dictionaries).
+- Endpoint behavior can include business normalization before persistence and before outbound calls to EFRIS.
+
+### 1.3 Business Glossary
+
+| Term | Business meaning in this API context |
+| --- | --- |
+| eTaxWare | The internal tax operations platform where business documents, mappings, settings, and audit artifacts are persisted and managed. |
+| etaxware-api | The ERP-facing integration layer that receives ERP transactions and orchestrates compliant EFRIS interactions. |
+| EFRIS | Uganda Revenue Authority (URA) tax platform used for tax document submission, validation, and query workflows. |
+| Voucher | ERP business document identity (for example invoice, credit note, stock journal) represented by `VOUCHERNUMBER`, `VOUCHERREF`, `VOUCHERTYPE`, and `VOUCHERTYPENAME`. |
+| ORGTIN | Integrated organization TIN used as tenant/business identity guard at pre-route validation time. |
+| ERPUSER | ERP user identity used to resolve permissions and ownership context for transactions and audit logs. |
+| Business response code | The value in `response.responseCode` representing business outcome; may indicate failure even when HTTP status is `200`. |
+| Mapping normalization | Translation of ERP-facing labels/codes (for example branch, stock types, adjustment types, currency, reasons) into canonical values used for persistence and EFRIS requests. |
+| Stock in type | Business reason/category for increasing stock (for example purchase, manufacture); validated and mapped before request/persistence. |
+| Stock adjustment type | Business reason/category for reducing or adjusting stock; validated and mapped before request/persistence. |
+| Master-data readiness | Operational prerequisite that required dictionaries and reference records (products, taxes, branches, mappings) exist and are aligned before posting transactions. |
+| Audit metadata | Request identity telemetry (`WINDOWSUSER`, `IPADDRESS`, `MACADDRESS`, `SYSTEMNAME`) stored for traceability, support, and compliance evidence. |
 
 ## 2. Base URL and Transport
 
@@ -64,6 +108,36 @@ Notes:
 - `1001`: missing API key
 - `1002`: API key invalid, inactive, or expired
 - `1003`: plugin version mismatch
+
+### 3.3 Error Code Glossary
+
+Use this glossary when interpreting `response.responseCode` values in endpoint responses.
+
+| Code | Meaning | Typical source area | Integration note |
+| --- | --- | --- | --- |
+| `00` | Operation successful | Most endpoints | Business success indicator; still check returned `data` content for context-specific values. |
+| `45` | Partial/mixed batch stock result | `/batchstockin` | Indicates at least one line did not complete cleanly; inspect response message and line-level outcomes. |
+| `99` | Generic business failure or record state conflict | Multiple endpoints | Commonly used for not found/already processed/operation not successful conditions. |
+| `0099` | User not allowed to perform function | Permission checks in endpoint handlers | Caller authenticated but lacks required operation permission. |
+| `-999` | Mandatory business field missing/invalid | Multiple endpoint validators | Common fail-fast validation code (for example missing voucher number, missing reason, missing TIN). |
+| `-998` | Commodity code missing | `/checktaxpayer` validator | Specific validation for missing `COMMODITYCODE`. |
+| `1000` | No parameters sent | Pre-route gate | Request body/query key envelope is missing or empty. |
+| `1001` | API key missing | Pre-route gate | Missing `APIKEY` in body/query. |
+| `1002` | API key invalid/inactive/expired | Pre-route gate | Key failed validity checks against configured API key store. |
+| `1003` | Plugin version mismatch | Pre-route gate | Caller `VERSION` does not match configured server app version. |
+| `1006` | Unsupported voucher type | `/queryinvoice` voucher routing | Voucher type label did not match supported invoice/credit/debit families. |
+| `300` | Email send failure | `/sendmail` | SMTP/config/send operation failed. |
+| `500` | Email request missing required content | `/sendmail` | Missing recipient email and/or message body. |
+| `602` | Goods code already exists | Product upload passthrough from upstream tax platform | Business duplicate conflict; implementation may still sync local state if remote already has product. |
+| `659` | Unit price could not be resolved | Stock in/out flows | Pricing resolution failed after fallback sequence (request/product pricing). |
+| `7650` | Integrated company TIN missing | Pre-route gate | Required `ORGTIN` not provided. |
+| `7651` | Supplied TIN does not match integrated TIN | Pre-route gate | Caller tenant identity mismatch against configured organization TIN. |
+| `2398` | Product tax code missing | `/uploadproduct` validator | Product upload blocked because `TAXCODE` was not supplied. |
+
+Notes:
+
+- Envelope codes are business-level outcomes and are the primary source of integration state, even when HTTP status is `200`.
+- Some non-listed codes may be passed through from upstream EFRIS responses; treat unknown codes as upstream/business exceptions and log full response payload for triage.
 
 ## 4. Standard Response Envelope
 
