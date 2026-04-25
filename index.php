@@ -78,9 +78,34 @@ $f3->ONERROR = function($f3) {
     //recursively clear existing output buffers
     while (ob_get_level())
         ob_end_clean();
-    
-    echo \Template::instance()->render('index.html');
-    return FALSE;
+
+    if (!headers_sent()) {
+        header('Content-Type: application/json');
+    }
+
+    $method = isset($_SERVER['REQUEST_METHOD']) ? strtoupper((string)$_SERVER['REQUEST_METHOD']) : '';
+    $uri = isset($_SERVER['REQUEST_URI']) ? (string)$_SERVER['REQUEST_URI'] : '/';
+    $friendlyMessage = $text;
+
+    if ((int)$code === 405) {
+        $friendlyMessage = 'Method Not Allowed. Use POST for API endpoints. For health checks, GET / is supported.';
+    } elseif ((int)$code === 404) {
+        $friendlyMessage = 'Endpoint not found. Verify the API URL and route.';
+    }
+
+    $response = array(
+        'response' => array(
+            'responseCode' => strval($code),
+            'responseMessage' => $friendlyMessage
+        ),
+        'data' => array(
+            'method' => $method,
+            'path' => $uri
+        )
+    );
+
+    echo json_encode($response);
+    return TRUE;
 };
 
 // run f3

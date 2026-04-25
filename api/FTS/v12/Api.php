@@ -64,6 +64,80 @@ Class Api{
     protected $emailport;
     
     protected $vatRegistered; //Flag to indicate if the tax payer is registered for VAT or not.
+    protected $auditLogged = FALSE;
+    protected $currentEndpoint = NULL;
+
+    private function resolveEndpointName(){
+        $uri = '';
+
+        if ($this->f3) {
+            $uri = (string)$this->f3->get('SERVER.REQUEST_URI');
+        } elseif (isset($_SERVER['REQUEST_URI'])) {
+            $uri = (string)$_SERVER['REQUEST_URI'];
+        }
+
+        $path = trim((string)parse_url($uri, PHP_URL_PATH));
+        $endpoint = strtolower(trim((string)basename($path)));
+
+        if ($endpoint === '' || $endpoint === 'index.php') {
+            return 'index';
+        }
+
+        return $endpoint;
+    }
+
+    private function createerpauditlogSafe(...$args){
+        try {
+            if (!$this->util) {
+                return;
+            }
+
+            call_user_func_array(array($this->util, 'createerpauditlog'), $args);
+            $this->auditLogged = TRUE;
+        } catch (Exception $e) {
+            if ($this->logger) {
+                $this->logger->write('Api : createerpauditlogSafe() : The operation to create an ERP audit log was not successful. The error message is ' . $e->getMessage(), 'r');
+            }
+        }
+    }
+
+    public function ensureEndpointAuditLog(){
+        if ($this->auditLogged) {
+            return;
+        }
+
+        $endpoint = trim((string)$this->currentEndpoint);
+
+        if ($endpoint === '') {
+            $endpoint = $this->resolveEndpointName();
+        }
+
+        if (in_array($endpoint, array('beforeroute', 'afterroute', '__construct'), TRUE)) {
+            return;
+        }
+
+        $json = json_decode((string)$this->json, TRUE);
+
+        if (!is_array($json)) {
+            $json = array();
+        }
+
+        $windowsuser = empty($json['WINDOWSUSER']) ? '' : trim((string)$json['WINDOWSUSER']);
+        $ipaddress = empty($json['IPADDRESS']) ? '' : trim((string)$json['IPADDRESS']);
+        $macaddress = empty($json['MACADDRESS']) ? '' : trim((string)$json['MACADDRESS']);
+        $systemname = empty($json['SYSTEMNAME']) ? '' : trim((string)$json['SYSTEMNAME']);
+        $vchnumber = empty($json['VOUCHERNUMBER']) ? '' : trim((string)$json['VOUCHERNUMBER']);
+        $vchref = empty($json['VOUCHERREF']) ? '' : trim((string)$json['VOUCHERREF']);
+
+        $userid = empty($this->userid_u) ? $this->userid : $this->userid_u;
+        $activity = strtoupper($endpoint) . ': ' . (empty($this->message) ? 'Request completed' : trim((string)$this->message));
+
+        if ($vchnumber !== '' || $vchref !== '') {
+            $activity = $activity . ': ' . $vchnumber . ': ' . $vchref;
+        }
+
+        $this->createerpauditlogSafe($userid, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+    }
 
     /**
      *	@name sendmail
@@ -362,7 +436,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         // prepare json response
@@ -523,7 +597,7 @@ Class Api{
                                                 </body></html>';
                         $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
 
-                        $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                        $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
 
                         $this->response = array(
                             "response" => array(
@@ -573,7 +647,7 @@ Class Api{
                                                 </body></html>';
                         $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
 
-                        $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                        $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
 
                         $this->response = array(
                             "response" => array(
@@ -1284,7 +1358,7 @@ Class Api{
             }
             
             $activity = 'UPLOADDEBITNOTE: ' . $vchnumber . ': ' . $vchref . ': ' . $this->message;
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
         }
                
         
@@ -1417,7 +1491,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
                 
         // prepare json response
@@ -1520,7 +1594,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
  
@@ -1622,7 +1696,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         
@@ -1790,7 +1864,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         
@@ -2015,7 +2089,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         
@@ -2116,7 +2190,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         
@@ -2254,7 +2328,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         
@@ -2537,7 +2611,7 @@ Class Api{
                 $ipaddress = trim($json['IPADDRESS']);
                 $macaddress = trim($json['MACADDRESS']);
                 $systemname = trim($json['SYSTEMNAME']);
-                $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+                $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
             } else {
                 $this->logger->write("Api : fetchproduct() : The product code is empty", 'r');
                 $this->message = 'The product/service code is empty. Please configure.';
@@ -2778,7 +2852,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         
@@ -3190,7 +3264,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         
@@ -3311,7 +3385,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         
@@ -3653,7 +3727,7 @@ Class Api{
                                 $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has invalid DISCOUNTPCT. Send a decimal fraction (e.g. 0.25 for 25%).";
                                 $this->code = '-999';
 
-                                $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
 
                                 $body = '<html><body>
                                                 <p>Hello,</p></br>
@@ -3694,7 +3768,7 @@ Class Api{
                                 $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has DISCOUNT/DISCOUNTPCT but no valid DISCOUNTFLAG. Expected 1 or 2.";
                                 $this->code = '-999';
 
-                                $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
 
                                 $body = '<html><body>
                                                 <p>Hello,</p></br>
@@ -3734,7 +3808,7 @@ Class Api{
                                 $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has DISCOUNTFLAG=1 but DISCOUNT and DISCOUNTPCT are missing/zero.";
                                 $this->code = '-999';
 
-                                $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
 
                                 $body = '<html><body>
                                                 <p>Hello,</p></br>
@@ -3793,7 +3867,7 @@ Class Api{
                                 //break;//exit loop
                                 
                                 //return to the client
-                                $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
                                 
                                 $body = '<html><body>
                                                 <p>Hello,</p></br>
@@ -3838,7 +3912,7 @@ Class Api{
                                     //break;//exit loop
                                     
                                     //return to the client
-                                    $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                    $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
                                     
                                     $body = '<html><body>
                                                 <p>Hello,</p></br>
@@ -4408,7 +4482,7 @@ Class Api{
             }
             
             
-            $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+            $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
         }
         
         
@@ -4606,7 +4680,7 @@ Class Api{
                         $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
                         
                         //return to the client
-                        $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                        $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
                         
                         $this->response = array(
                             "response" => array(
@@ -4657,7 +4731,7 @@ Class Api{
                         $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
                         
                         //return to the client
-                        $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                        $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
                         
                         $this->response = array(
                             "response" => array(
@@ -4927,7 +5001,7 @@ Class Api{
                                 $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has invalid DISCOUNTPCT. Send a decimal fraction (e.g. 0.25 for 25%).";
                                 $this->code = '-999';
 
-                                $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
 
                                 $body = '<html><body>
                                                 <p>Hello,</p></br>
@@ -4969,7 +5043,7 @@ Class Api{
                                 $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has DISCOUNT/DISCOUNTPCT but no valid DISCOUNTFLAG. Expected 1 or 2.";
                                 $this->code = '-999';
 
-                                $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
 
                                 $body = '<html><body>
                                                 <p>Hello,</p></br>
@@ -5010,7 +5084,7 @@ Class Api{
                                 $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has DISCOUNTFLAG=1 but DISCOUNT and DISCOUNTPCT are missing/zero.";
                                 $this->code = '-999';
 
-                                $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
 
                                 $body = '<html><body>
                                                 <p>Hello,</p></br>
@@ -5071,7 +5145,7 @@ Class Api{
                                 //break;//exit loop
                                 
                                 //return to the client
-                                $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
                                 
                                 $body = '<html><body>
                                                 <p>Hello,</p></br>
@@ -5115,7 +5189,7 @@ Class Api{
                                     //break;//exit loop
                                     
                                     //return to the client
-                                    $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                    $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
                                     
                                     $body = '<html><body>
                                                 <p>Hello,</p></br>
@@ -5792,7 +5866,7 @@ Class Api{
                 $this->code = '0099';
             }
             
-            $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);            
+            $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);            
         }
         
         
@@ -6372,7 +6446,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
 
@@ -6556,7 +6630,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
 
@@ -6589,6 +6663,7 @@ Class Api{
      *
      */
     function beforeroute(){
+        $this->currentEndpoint = $this->resolveEndpointName();
         $this->logger->write("Api : beforeroute() : Checking client details", 'r');
         $REMOTE_ADDR = $this->f3->get('SERVER.REMOTE_ADDR');
         $REMOTE_HOST = $this->f3->get('SERVER.REMOTE_HOST');
@@ -6885,6 +6960,8 @@ Class Api{
         
         $util = new Utilities();
         $this->util = $util;
+
+        register_shutdown_function(array($this, 'ensureEndpointAuditLog'));
         
     }
 }
