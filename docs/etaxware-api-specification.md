@@ -1,11 +1,12 @@
 # eTaxWare API Specification
 
-Last updated: 2026-04-25
+Last updated: 2026-04-26
 
 ## 0. Version and Change Tracking
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 2.0.9 | 2026-04-26 | Added runtime/operations documentation for graceful HTTP error JSON envelopes, GET health-check support on `/`, and automatic log rotation with trace-log split (`api-trace.log`, `util-trace.log`). |
 | 2.0.8 | 2026-04-25 | Added consolidated error-code glossary with meanings, typical source areas, and interpretation notes for integrators/support teams. |
 | 2.0.7 | 2026-04-25 | Added business glossary for onboarding and shared business-language alignment between ERP, eTaxWare, and EFRIS users. |
 | 2.0.6 | 2026-04-25 | Added v12 mapping normalization across stock and persistence flows: mapped stock-in/out and adjustment type values before outbound calls and local logs, mapped stock transfer branch/product persistence values, and mapped persisted credit-note `currency`, `invoiceindustrycode`, and `reasoncode`. |
@@ -29,7 +30,7 @@ This guide documents the API endpoints in the etaxware-api service.
 - Route map source: `config/routes.ini`
 - Utility adapter: `util/{adapter}/Utilities.php`
 - Protocol: JSON over HTTP
-- Route methods: POST only
+- Route methods: POST for business endpoints, plus GET support on `/` for health/browser probing.
 
 ### 1.1 Business Context
 
@@ -79,7 +80,7 @@ Use your deployment base, for example:
 
 - Local XAMPP: `http://localhost/etaxware-api`
 
-All routes in the active adapter are defined as POST routes.
+Most routes in the active adapter are POST routes. Root `/` also accepts GET for health/browser probing.
 
 ## 3. Authentication and Pre-route Validation
 
@@ -155,13 +156,61 @@ Most endpoints return this shape:
 
 `data` may be an object, list, or empty array depending on endpoint.
 
+### 4.1 HTTP Failure Envelope (404/405/5xx)
+
+Framework-level HTTP failures are returned as graceful JSON (instead of raw framework HTML).
+
+Example shape:
+
+```json
+{
+  "response": {
+    "responseCode": "405",
+    "responseMessage": "Method Not Allowed. Use POST for API endpoints. For health checks, GET / is supported."
+  },
+  "data": {
+    "method": "GET",
+    "path": "/etaxware-api/uploadinvoice"
+  }
+}
+```
+
+Notes:
+
+- HTTP status code is preserved at transport level (`404`, `405`, `500`, etc.).
+- For 5xx failures, response messages are sanitized for clients while details remain in server logs.
+
+### 4.2 Operational Logging and Rotation
+
+The runtime now auto-manages log growth and separates high-volume traces from operational signals.
+
+Primary logs:
+
+- `error.log` (bootstrap/framework errors)
+- `api.log` (operational API controller logs)
+- `util.log` (operational utility/service logs)
+
+Trace logs:
+
+- `api-trace.log` (request/response/raw body/URL-style diagnostics)
+- `util-trace.log` (request/response/SQL-style diagnostics)
+
+Automatic rotation:
+
+- Rotation runs during bootstrap (no manual GUI trigger required).
+- Size threshold and retention are config-driven:
+  - `log_rotation_enabled`
+  - `log_rotate_max_mb`
+  - `log_rotate_max_files`
+- Rotated files use timestamp suffixes (for example `util-trace.log.YYYYMMDD-HHMMSS`).
+
 ## 5. Endpoint Catalog
 
 ### 5.1 Routed endpoints from config/routes.ini
 
 | Route | Handler | Runtime status |
 | --- | --- | --- |
-| `/` | `Api->index` | Implemented |
+| `/` | `Api->index` | Implemented (GET + POST) |
 | `/testapi` | `Api->testapi` | Implemented |
 | `/uploadproduct` | `Api->uploadproduct` | Implemented |
 | `/stockin` | `Api->stockin` | Implemented |
@@ -192,11 +241,12 @@ Most endpoints return this shape:
 
 ### 5.2.1 Health and diagnostics
 
-#### POST /
+#### GET or POST /
 
 - Purpose: service health check
 - Handler: `index()`
-- Typical success: `00`, `It Works!`
+- Typical success: `00`, `It Works!` (POST with valid standard envelope)
+- Browser/quick probe behavior: GET `/` without required request payload returns graceful JSON validation response (for example `1000: No parameters were sent!`) instead of framework error HTML.
 
 Accepted parameters:
 
