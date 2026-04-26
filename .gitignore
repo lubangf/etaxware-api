@@ -2,5 +2,6 @@ vendor/
 tmp/
 logs/
 *.log
+*.log.*
 *.sqlite
 *.db
