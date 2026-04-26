@@ -6,6 +6,8 @@ Last updated: 2026-04-26
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 2.1.1 | 2026-04-26 | Clarified and enforced v13 credit-note reason behavior: `reasonCode` is normalized via mapping, while `reason` is preserved as ERP-provided free text (no reason-text mapping). |
+| 2.1.0 | 2026-04-26 | Promoted runtime baseline from v12 to v13 to isolate incoming change-set work while preserving v12 behavior as fallback. |
 | 2.0.9 | 2026-04-26 | Added runtime/operations documentation for graceful HTTP error JSON envelopes, GET health-check support on `/`, and automatic log rotation with trace-log split (`api-trace.log`, `util-trace.log`). |
 | 2.0.8 | 2026-04-25 | Added consolidated error-code glossary with meanings, typical source areas, and interpretation notes for integrators/support teams. |
 | 2.0.7 | 2026-04-25 | Added business glossary for onboarding and shared business-language alignment between ERP, eTaxWare, and EFRIS users. |
@@ -26,7 +28,7 @@ Last updated: 2026-04-26
 This guide documents the API endpoints in the etaxware-api service.
 
 - Runtime adapter: `api/{adapter}/Api.php`
-- Current active adapter (config): `api/FTS/v12/Api.php`
+- Current active adapter (config): `api/FTS/v13/Api.php`
 - Route map source: `config/routes.ini`
 - Utility adapter: `util/{adapter}/Utilities.php`
 - Protocol: JSON over HTTP

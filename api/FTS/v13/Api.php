@@ -1,0 +1,6968 @@
+<?php
+use PHPMailer\PHPMailer\PHPMailer;
+use \PHPMailer\PHPMailer\SMTP;
+
+/**
+ * @name Api.php
+ * @desc This file is part of the etaxware-api app. This is the API version 13
+ * @date: 26-04-2026
+ * @file: Api.php
+ * @path: ./api/FTS/v13/Api.php
+ * @author: francis lubanga <francis.lubanga@gmail.com>
+ * @copyright  (C) FTS Group Consulting Limited - All Rights Reserved
+ * @version    13.0.0
+ */
+
+/*
+ * v13 baseline note (2026-04-26):
+ * This version is branched from v12 as the new active baseline for incoming
+ * user-reported fixes while preserving prior route and validation behavior.
+ */
+
+Class Api{
+    protected $module = NULL; //tblmodules
+    protected $submodule = NULL; //tblsubmodules
+    
+    protected $f3;// store an instance of base
+    protected $db;// store database connection here    
+    protected $logger;    
+    protected $appsettings;// store the setting details here
+    protected $util;// store utilities here
+    
+    protected $data;//store the data/request from the client
+    protected $response;
+    protected $message;
+    protected $code;
+    protected $action;
+    protected $xml;
+    protected $json;
+    protected $params;
+    protected $errormessage;
+    protected $errorcode;
+    protected $apikey; //store the API key sent by the client
+    protected $version; //store the version sent by the client
+        
+    /*API user details. These are populated from a setting, are are using for more admin specific tasks, such as creating audit logs, sending email alerts.*/
+    protected $userid;
+    protected $username;
+    protected $password;
+    protected $permissions;
+    
+    /*Current user details*/
+    protected $userpermissions;
+    protected $userid_u;
+    protected $username_u;
+    protected $userbranch_u;
+
+    /*Email Settings*/
+    protected $recipientname;
+    protected $recipientemail;
+    protected $subject;
+    protected $ccrecipientemail = 'francis.lubanga@gmail.com'; 
+    protected $ccrecipientname = 'e-TW Developer';
+    protected $emailhost;
+    protected $emailport;
+    
+    protected $vatRegistered; //Flag to indicate if the tax payer is registered for VAT or not.
+    protected $auditLogged = FALSE;
+    protected $currentEndpoint = NULL;
+
+    private function resolveEndpointName(){
+        $uri = '';
+
+        if ($this->f3) {
+            $uri = (string)$this->f3->get('SERVER.REQUEST_URI');
+        } elseif (isset($_SERVER['REQUEST_URI'])) {
+            $uri = (string)$_SERVER['REQUEST_URI'];
+        }
+
+        $path = trim((string)parse_url($uri, PHP_URL_PATH));
+        $endpoint = strtolower(trim((string)basename($path)));
+
+        if ($endpoint === '' || $endpoint === 'index.php') {
+            return 'index';
+        }
+
+        return $endpoint;
+    }
+
+    private function createerpauditlogSafe(...$args){
+        try {
+            if (!$this->util) {
+                return;
+            }
+
+            call_user_func_array(array($this->util, 'createerpauditlog'), $args);
+            $this->auditLogged = TRUE;
+        } catch (Exception $e) {
+            if ($this->logger) {
+                $this->logger->write('Api : createerpauditlogSafe() : The operation to create an ERP audit log was not successful. The error message is ' . $e->getMessage(), 'r');
+            }
+        }
+    }
+
+    public function ensureEndpointAuditLog(){
+        if ($this->auditLogged) {
+            return;
+        }
+
+        $endpoint = trim((string)$this->currentEndpoint);
+
+        if ($endpoint === '') {
+            $endpoint = $this->resolveEndpointName();
+        }
+
+        if (in_array($endpoint, array('beforeroute', 'afterroute', '__construct'), TRUE)) {
+            return;
+        }
+
+        $json = json_decode((string)$this->json, TRUE);
+
+        if (!is_array($json)) {
+            $json = array();
+        }
+
+        $windowsuser = empty($json['WINDOWSUSER']) ? '' : trim((string)$json['WINDOWSUSER']);
+        $ipaddress = empty($json['IPADDRESS']) ? '' : trim((string)$json['IPADDRESS']);
+        $macaddress = empty($json['MACADDRESS']) ? '' : trim((string)$json['MACADDRESS']);
+        $systemname = empty($json['SYSTEMNAME']) ? '' : trim((string)$json['SYSTEMNAME']);
+        $vchnumber = empty($json['VOUCHERNUMBER']) ? '' : trim((string)$json['VOUCHERNUMBER']);
+        $vchref = empty($json['VOUCHERREF']) ? '' : trim((string)$json['VOUCHERREF']);
+
+        $userid = empty($this->userid_u) ? $this->userid : $this->userid_u;
+        $activity = strtoupper($endpoint) . ': ' . (empty($this->message) ? 'Request completed' : trim((string)$this->message));
+
+        if ($vchnumber !== '' || $vchref !== '') {
+            $activity = $activity . ': ' . $vchnumber . ': ' . $vchref;
+        }
+
+        $this->createerpauditlogSafe($userid, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+    }
+
+    /**
+     *	@name sendmail
+     *  @desc Send Email
+     *	@return NULL
+     *	@param NULL
+     **/
+    function sendmail(){
+        $operation = NULL; //tblevents
+        $permission = 'SENDEMAIL'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        
+        if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+            date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+        }
+        
+        $json = json_decode($this->json, TRUE); //convert JSON into array
+        
+        $recipientname = trim($json['RECIPIENTNAME']);
+        $recipientemail = trim($json['RECIPIENTEMAIL']);
+        $subject = trim($json['SUBJECT']);
+        $body = trim($json['BODY']);
+        $attachments = array();//this is an array
+        
+        
+        if ($recipientemail && $body) {
+            try {
+                //Create a new PHPMailer instance
+                $mail = new PHPMailer;
+                
+                //Tell PHPMailer to use SMTP
+                $mail->isSMTP();
+                
+                //Enable SMTP debugging
+                // SMTP::DEBUG_OFF = off (for production use)
+                // SMTP::DEBUG_CLIENT = client messages
+                // SMTP::DEBUG_SERVER = client and server messages
+                $mail->SMTPDebug = SMTP::DEBUG_OFF;
+                
+                //Set the hostname of the mail server
+                $mail->Host = $this->emailhost;
+                // use
+                // $mail->Host = gethostbyname('smtp.gmail.com');
+                // if your network does not support SMTP over IPv6
+                
+                //Set the SMTP port number - 587 for authenticated TLS, a.k.a. RFC4409 SMTP submission
+                $mail->Port = $this->emailport;
+                
+                //Set the encryption mechanism to use - STARTTLS or SMTPS
+                $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+                
+                //Whether to use SMTP authentication
+                $mail->SMTPAuth = true;
+                
+                //Username to use for SMTP authentication - use full email address for gmail
+                $mail->Username = $this->appsettings['EMAILUSERNAME'];
+                
+                //Password to use for SMTP authentication
+                $mail->Password = $this->appsettings['EMAILPASSWORD'];
+                
+                //Set who the message is to be sent from
+                $mail->setFrom($this->appsettings['EMAILUSERNAME'], 'e-TW App');
+                
+                //Set an alternative reply-to address
+                //$mail->addReplyTo('replyto@example.com', 'First Last');
+                
+                //Set who the message is to be sent to
+                $mail->addAddress($recipientemail, $recipientname);
+                $mail->AddCC($this->ccrecipientemail, $this->ccrecipientname);
+                
+                //Set the subject line
+                $mail->Subject = $subject;
+                
+                //Read an HTML message body from an external file, convert referenced images to embedded,
+                //convert HTML into a basic plain-text alternative body
+                //$mail->msgHTML(file_get_contents('contents.html'), __DIR__);
+                $mail->Body = $body;
+                
+                //Replace the plain text body with one created manually
+                $mail->AltBody = 'This is a plain-text message body';
+                
+                //Attach an image file
+                //$mail->addAttachment('../scripts/db/rematch.sql');
+                foreach ($attachments as $obj) {
+                    $mail->addAttachment($obj['path'] . $obj['name']);
+                }
+                
+                //send the message, check for errors
+                if (!$mail->send()) {
+                    $this->logger->write("Api Controller : sendmail() : The operation to send an email was not successful. The error messages is " . $mail->ErrorInfo, 'r');
+                    $this->code = '300';
+                    $this->message = 'The operation to send an email was not successful';
+                } else {
+                    $this->logger->write("Api : sendmail() : The operation to send an email was successful", 'r');
+                    $this->code = '00';
+                    $this->message = 'The operation to send an email was successful';
+                }
+            } catch (Exception $e) {
+                $this->logger->write("Api Controller : sendmail() : The operation to send an email was not successful. The error messages is " . $e->getMessage(), 'r');
+                $this->code = '300';
+                $this->message = 'The operation to send an email was not successful';
+            }
+        } else {
+            $this->logger->write("Api : sendmail() : There was no email or body specified", 'r');
+            $this->code = '500';
+            $this->message = 'There was no email or body specified';
+        }
+        
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array()
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+    }
+    
+    /**
+     *	@name index
+     *  @desc used to test if the service is running
+     *	@return string response
+     *	@param NULL
+     **/
+    function index(){              
+        $this->logger->write("Api : index() : The previous URL is " . $this->f3->get('SERVER.HTTP_REFERER'), 'r');
+        $this->logger->write("Api : index() : The current URL is " . $this->f3->get('SERVER.REQUEST_URI'), 'r');
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            $this->message = 'It Works!';
+            $this->code = '00';
+        }
+        
+        
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array()
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+    }
+    
+    /**
+     *	@name testapi
+     *  @desc used to test if the service is running
+     *	@return string response
+     *	@param NULL
+     **/
+    function testapi(){
+        $this->logger->write("Api : testapi() : The previous URL is " . $this->f3->get('SERVER.HTTP_REFERER'), 'r');
+        $this->logger->write("Api : testapi() : The current URL is " . $this->f3->get('SERVER.REQUEST_URI'), 'r');
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            $this->message = 'It Works!';
+            $this->code = '00';
+        }
+        
+        
+        /*$body = 'This is a test body';        
+        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);*/
+        
+        
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array()
+        );
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+    }
+       
+    /**
+     *	@name validatetin
+     *  @desc validate a TIN number
+     *	@return string response
+     *	@param NULL
+     **/
+    function validatetin(){
+        $operation = NULL; //tblevents
+        $permission = 'QUERYTAXPAYER'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            $tin = trim($json['TIN']);
+
+            $this->logger->write("Api : validatetin() : The userid is: " . $this->userid_u, 'r');
+            $this->logger->write("Api : validatetin() : The TIN is: " . $tin, 'r');
+            
+            $this->logger->write("Api : validatetin() : Checking permissions", 'r');
+            if ($this->userpermissions[$permission]) {
+                $ninBrn = '';
+                $legalName = '';
+                $businessName = '';
+                $contactNumber = '';
+                $contactEmail = '';
+                $address = '';
+                
+                if (trim($tin) == '' || empty($tin)) {
+                    $this->logger->write("Api : validatetin() : No TIN was supplied", 'r');
+                    
+                    $this->message = "No TIN was supplied";
+                    $this->code = "-999";
+                    
+                    $body = $this->code . ' : ' . $this->message;
+                    $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                } else {
+                    $data = $this->util->querytaxpayer($this->userid_u, $tin);//will return JSON.
+                    $data = json_decode($data, true);
+                    
+                    if (isset($data['taxpayer'])){
+                        $tin = $data['taxpayer']['tin'];
+                        $ninBrn = empty($data['taxpayer']['ninBrn'])? '' : $data['taxpayer']['ninBrn'];
+                        $legalName = empty($data['taxpayer']['legalName'])? '' : $data['taxpayer']['legalName'];
+                        $businessName = empty($data['taxpayer']['businessName'])? '' : $data['taxpayer']['businessName'];
+                        $contactNumber = empty($data['taxpayer']['contactNumber'])? '' : $data['taxpayer']['contactNumber'];
+                        $contactEmail = empty($data['taxpayer']['contactEmail'])? '' : $data['taxpayer']['contactEmail'];
+                        $address = empty($data['taxpayer']['address'])? '' : $data['taxpayer']['address'];
+                        $this->logger->write("Api : validatetin() : The operation to query the taxpayer was successful", 'r');
+                        $this->message = "The operation to query the taxpayer was successful";
+                        $this->code = '00';
+                    } elseif (isset($data['returnCode'])){
+                        $this->logger->write("Api : validatetin() : The operation to query the taxpayer not successful. The error message is " . $data['returnMessage'], 'r');
+                        $this->message = $data['returnMessage'];
+                        $this->code = $data['returnCode'];
+                        
+                        $body = $this->code . ' : ' . $this->message;
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    } else {
+                        $this->logger->write("Api : validatetin() : The operation to query the taxpayer was not successful", 'r');
+                        $this->message = "The operation to query the taxpayer was not successful";
+                        $this->code = '99';
+                        
+                        $body = $this->code . ' : ' . $this->message;
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    }
+                }
+                
+                
+            } else {
+                $this->logger->write("Api : validatetin() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+                                 
+            
+            
+            $activity = 'VALIDATETIN: ' . $tin . ': ' . $this->message;
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+        }
+        
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array(
+                "NINBRN" => $ninBrn,
+                "LEGALNAME" => $legalName,
+                "BUSINESSNAME" => $businessName,
+                "CONTACTNUMBER" => $contactNumber,
+                "CONTACTEMAIL" => $contactEmail,
+                "ADDRESS" => $address
+            )
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+    }
+        
+
+
+	/**
+     *	@name uploaddebitnote
+     *  @desc upload debitnote
+     *	@return string response
+     *	@param NULL
+     **/
+    function uploaddebitnote(){
+        // Maintainer note: this handler is intentionally kept in v11 to preserve
+        // route parity and ensure /uploaddebitnote works in the active FTS adapter.
+        $operation = NULL; //tblevents
+        $permission = 'UPLOADDEBITNOTE'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            $debitnoteid = '';
+            $debitnotenumber = '';
+            $issueddate = '';
+            $fdn = '';
+            $qr = '';
+            
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            $tcsdetails = new tcsdetails($this->db);
+            $tcsdetails->getByID($this->appsettings['EFRIS_TCS_RECORD_ID']);
+            
+            $companydetails = new organisations($this->db);
+            $companydetails->getByID($this->appsettings['SELLER_RECORD_ID']);
+            
+            $devicedetails = new devices($this->db);
+            $devicedetails->getByID($this->appsettings['EFRIS_DEVICE_RECORD_ID']);
+            
+            $vchtype = trim($json['VOUCHERTYPE']);
+            $vchtypename = trim($json['VOUCHERTYPENAME']);
+            $vchnumber = trim($json['VOUCHERNUMBER']);
+            $vchref = trim($json['VOUCHERREF']);
+            $orivchnumber = trim($json['ORIVOUCHERNUMBER']);/*holds the original invoice #*/
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            
+            $this->logger->write("Api : uploaddebitnote() : The userid is: " . $this->userid_u, 'r');
+            $this->logger->write("Api : uploaddebitnote() : Checking permissions", 'r');
+            if ($this->userpermissions[$permission]) {
+                $branch = new branches($this->db);
+                $branch->getByID($this->userbranch_u);
+                
+                $inv_check = new DB\SQL\Mapper($this->db, 'tbldebitnotes');
+                $inv_check->load(array('TRIM(erpdebitnoteid)=?', $vchnumber));
+                $this->logger->write($this->db->log(TRUE), 'r');
+                
+                if($inv_check->dry ()){
+                    $this->logger->write("Api : uploaddebitnote() : The debitnote does not exist on eTW. Proceed and upload", 'r');
+                    
+                    if(trim($orivchnumber) !== '' || ! empty(trim($orivchnumber))) {
+                        $this->logger->write("Api : uploaddebitnote() : The associated original invoice was supplied", 'r');
+                        
+                        $orig_inv = new DB\SQL\Mapper($this->db, 'tblinvoices');
+                        $orig_inv->load(array('TRIM(erpinvoiceid)=?', $orivchnumber));
+                        $this->logger->write($this->db->log(TRUE), 'r');
+                        
+                        if ($orig_inv->dry()) {
+                            $this->logger->write("Api : uploaddebitnote() : There is no associated original invoice in the database", 'r');
+                            $oriinvoiceid = NULL;
+                            $oriinvoiceno = NULL;
+                        } else {
+                            $oriinvoiceid = $orig_inv->einvoiceid;
+                            $oriinvoiceno = $orig_inv->einvoicenumber;
+                            
+                            if(trim($oriinvoiceid) == '' || empty(trim($oriinvoiceid))) {
+                                $this->logger->write("Api : uploaddebitnote() : The oriinvoiceid is empty", 'r');
+                                
+                                if(trim($oriinvoiceno) == '' || empty(trim($oriinvoiceno))) {
+                                    $this->logger->write("Api : uploaddebitnote() : The oriinvoiceno is empty", 'r');
+                                } else {
+                                    $this->logger->write("Api : uploaddebitnote() : The oriinvoiceno is NOT empty", 'r');
+                                    $i_data = $this->util->downloadinvoice($this->userid, $oriinvoiceno);
+                                    $i_data = json_decode($i_data, true);
+                                    
+                                    if (isset($i_data['basicInformation'])){
+                                        $TempInvoiceId = $i_data['basicInformation']['invoiceId'];
+                                        $TempInvoiceNo = $i_data['basicInformation']['invoiceNo'];
+                                        
+                                        if (trim($TempInvoiceNo) == trim($oriinvoiceno)) {
+                                            $oriinvoiceid = $TempInvoiceId;
+                                        }
+                                    }
+                                    
+                                    try{
+                                        $this->db->exec(array('UPDATE tblinvoices SET einvoiceid = "' . $oriinvoiceid . '", modifieddt = NOW(), modifiedby = ' . $this->userid . ' WHERE einvoicenumber = "' . $oriinvoiceno . '"'));
+                                        $this->logger->write($this->db->log(TRUE), 'r');
+                                    } catch (Exception $e) {
+                                        $this->logger->write("Api : uploaddebitnote() : Failed to update the table tblinvoices. The error message is " . $e->getMessage(), 'r');
+                                    }
+                                }
+                            } else {
+                                $this->logger->write("Api : uploaddebitnote() : The oriinvoiceid is not empty", 'r');
+                            }
+                        }
+                    } else {
+                        $this->logger->write("Api : uploaddebitnote() : The associated original invoice was not supplied", 'r');
+                        $oriinvoiceid = NULL;
+                        $oriinvoiceno = NULL;
+
+                        // Maintainer note (2026-04-14): v10-b backfill.
+                        // Debit note upload must reference an original invoice.
+                        $this->message = "The associated original invoice number was not supplied!";
+                        $this->code = '-999';
+
+                        $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a debitnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                        $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+
+                        $this->response = array(
+                            "response" => array(
+                                "responseCode" => $this->code,
+                                "responseMessage" => $this->message
+                            ),
+                            "data" => array(
+                                "INVID" => "",
+                                "INVNO" => "",
+                                "ISSUEDT" => "",
+                                "FDN" => "",
+                                "QRCODE" => "",
+                                "REFERENCE" => ""
+                            )
+                        );
+
+                        $len = sizeof($this->response);
+                        header ("CONTENT-LENGTH:".$len);
+                        die(json_encode($this->response));
+                        return;
+                    }
+                    
+                    $reasoncode = NULL;
+                    $reason = NULL;
+
+                    if (isset($json['REASONS'])) {
+                        foreach ($json['REASONS'] as $obj){
+                            $reasoncode = trim($obj['REASONCODE']);
+                            $reason = trim($obj['REASON']);
+                        }
+                    } else {
+                        // Maintainer note (2026-04-14): v10-b backfill.
+                        // Reason details are mandatory for debit-note uploads.
+                        $this->logger->write("Api : uploaddebitnote() : No reason was supplied!", 'r');
+                        $this->message = "No reason was supplied!";
+                        $this->code = '-999';
+
+                        $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a debitnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                        $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+
+                        $this->response = array(
+                            "response" => array(
+                                "responseCode" => $this->code,
+                                "responseMessage" => $this->message
+                            ),
+                            "data" => array(
+                                "INVID" => "",
+                                "INVNO" => "",
+                                "ISSUEDT" => "",
+                                "FDN" => "",
+                                "QRCODE" => "",
+                                "REFERENCE" => ""
+                            )
+                        );
+
+                        $len = sizeof($this->response);
+                        header ("CONTENT-LENGTH:".$len);
+                        die(json_encode($this->response));
+                        return;
+                    }
+                    
+                    $debitnotedetails = array(
+                        'gooddetailgroupid' => NULL,
+                        'taxdetailgroupid' => NULL,
+                        'paymentdetailgroupid' => NULL,
+                        'erpdebitnoteid' => trim($json['VOUCHERNUMBER']),
+                        'erpdebitnoteno' => NULL,
+                        'erpinvoiceid' => trim($json['VOUCHERREF']),
+                        'erpinvoiceno' => NULL,
+                        'antifakecode' => NULL,
+                        'deviceno' => trim($devicedetails->deviceno),
+                        'issueddate' => date('Y-m-d'),
+                        'issuedtime' => date('Y-m-d H:i:s'),
+                        'operator' => trim($json['ERPUSER']),
+                        'currency' => $this->util->getcurrency(trim($json['CURRENCY'])),
+                        'oriinvoiceid' => $oriinvoiceid,
+                        'oriinvoiceno' => $oriinvoiceno,
+                        'invoicetype' => "4",
+                        'invoicekind' => ($this->vatRegistered == 'Y')? "1" : "2",
+                        'datasource' => $this->appsettings['WESERVICEDS'],
+                        'invoiceindustrycode' => trim($json['INDUSTRYCODE'])? trim($json['INDUSTRYCODE']) : "101",
+                        'einvoiceid' => NULL,
+                        'einvoicenumber' => NULL,
+                        'einvoicedatamatrixcode' => NULL,
+                        'isbatch' => '0',
+                        'netamount' => NULL,
+                        'taxamount' => NULL,
+                        'grossamount' => NULL,
+                        'origrossamount' => NULL,
+                        'itemcount' => NULL,
+                        'modecode' => '1',/*default-online*/
+                        'modename' => NULL,
+                        'remarks' => NULL,
+                        'buyerid' => NULL,
+                        'sellerid' => $this->appsettings['SELLER_RECORD_ID'],
+                        'issueddatepdf' => date('Y-m-d H:i:s'),
+                        'grossamountword' => NULL,
+                        'isinvalid' => 0,
+                        'isrefund' => 0,
+                        'vchtype' => trim($json['VOUCHERTYPE']),
+                        'vchtypename' => trim($json['VOUCHERTYPENAME']),
+                        'reasoncode' => $reasoncode,
+                        'reason' => $reason,
+                        'referenceno' => NULL,
+                        'approvestatus' => NULL,
+                        'debitnoteapplicationid' => NULL,
+                        'refundinvoiceno' => NULL,
+                        'applicationtime' => date('Y-m-d H:i:s'),
+                        'invoiceapplycategorycode' => '101', /*101-Credit Note*/
+                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                        'vatProjectId' => trim($json['PROJECTID']),
+                        'vatProjectName' => trim($json['PROJECTNAME']),
+                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE']))
+                    );
+                    
+                    $buyer = array(
+                        'tin' => trim($json['BUYERTIN']),
+                        'ninbrn' => trim($json['BUYERNINBRN']),
+                        'PassportNum' => trim($json['BUYERPASSPORTNUM']),
+                        'legalname' => trim($json['BUYERLEGALNAME']),
+                        'businessname' => trim($json['BUSINESSNAME']),
+                        'address' => trim($json['BUYERADDRESS']),
+                        'mobilephone' => trim($json['MOBILEPHONE']),
+                        'linephone' => trim($json['BUYERLINEPHONE']),
+                        'emailaddress' => trim($json['BUYEREMAIL']),
+                        'placeofbusiness' => trim($json['BUYERPLACEOFBUSI']),
+                        'type' => $this->util->mapbuyertypecode(trim($json['BUYERTYPE'])),
+                        'citizineship' => trim($json['BUYERCITIZENSHIP']),
+                        'sector' => trim($json['BUYERSECTOR']),
+                        'referenceno' => trim($json['BUYERREFERENCENO']),
+                        'datasource' => $this->appsettings['WESERVICEDS'],
+                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                        'vatProjectId' => trim($json['PROJECTID']),
+                        'vatProjectName' => trim($json['PROJECTNAME']),
+                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE']))
+                    );
+                    
+                    if (trim($json['BUYERTIN']) == '' || empty($json['BUYERTIN'])) {
+                        $this->logger->write("Api : uploaddebitnote() : The buyer TIN was not provided!", 'r');
+                    } else {
+                        $v_data = $this->util->querytaxpayer($this->userid_u, trim($json['BUYERTIN']));
+                        $v_data = json_decode($v_data, true);
+                        
+                        if (isset($v_data['taxpayer'])){
+                            $this->logger->write("Api : uploaddebitnote() : The buyer TIN was validated successfully!", 'r');
+                            
+                            $buyer['ninbrn'] = $v_data['taxpayer']['ninBrn'];
+                            $buyer['legalname'] = $v_data['taxpayer']['legalName'];
+                            $buyer['businessname'] = $v_data['taxpayer']['businessName'];
+                            $buyer['mobilephone'] = $v_data['taxpayer']['contactNumber'];
+                            $buyer['emailaddress'] = $v_data['taxpayer']['contactEmail'];
+                            $buyer['address'] = $v_data['taxpayer']['address'];
+                        }
+                    }
+                    
+                    $goods = array();
+                    $taxes = array();
+                    $payments = array();
+                    
+                    $deemedflag = 'NO';
+                    $discountflag = 'NO';
+                    
+                    $pricevatinclusive = empty(trim($json['PRICEVATINCLUSIVE']))? 'NO' : strtoupper(trim($json['PRICEVATINCLUSIVE']));
+                    
+                    $netamount = 0;
+                    $taxamount = 0;
+                    $grossamount = 0;
+                    $itemcount = 0;
+                    
+                    $tr = new taxrates($this->db);
+                    $taxid = NULL;
+                    $taxcode = NULL;
+                    $taxname = NULL;
+                    $taxcategory = NULL;
+                    $taxdisplaycategory = NULL;
+                    $taxdescription = NULL;
+                    $rate = 0;
+                    $qty = 0;
+                    $unit = 0;
+                    $discountpct = 0;
+                    $total = 0;
+                    $discount = 0;
+                    $gross = 0;
+                    $discount = 0;
+                    $tax = 0;
+                    $net = 0;
+                    $amount = 0;
+                    $erpTaxRate = 0;
+                    $product = new products($this->db);
+                    $measureunit = new measureunits($this->db);
+
+                    /**
+                     * Author: francis.lubanga@gmail.com
+                     * Date: 2024-05-20
+                     * Description: Handle fees/taxes which have no rates, and are passed as invoice line items
+                     */
+                    $mapped_fees = array();
+
+                    /**
+                     * Maintainer note (2026-04-24): propagated from v10-b.
+                     * Keep debit-note excise duty computation parity with historical adapter behavior.
+                     */
+                    $exciseduty_details = array();
+
+                    if(trim($this->appsettings['CHECK_FEE_MAP_FLAG']) == '1'){
+                        $this->logger->write("Api : uploaddebitnote() : The check fees mapping is on", 'r');
+
+                        $feesmapping = new feesmapping($this->db);
+                        $feesmappings = $feesmapping->all();
+
+                        foreach ($feesmappings as $f_obj) {
+                            $this->logger->write("Api : uploaddebitnote() : The fee code is " . $f_obj['feecode'], 'r');
+                            $this->logger->write("Api : uploaddebitnote() : The product code is " . $f_obj['productcode'], 'r');
+
+                            $mapped_fees[] = array(
+                                'id' => empty($f_obj['id'])? '' : $f_obj['id'],
+                                'feecode' => empty($f_obj['feecode'])? '' : $f_obj['feecode'],
+                                'productcode' => empty($f_obj['productcode'])? '' : strtoupper($f_obj['productcode']),
+                                'amount' => 0
+                            );
+                        }
+                    }
+                    
+                    if (isset($json['INVENTORIES'])) {
+                        $gIndex = 0;
+                        
+                        foreach ($json['INVENTORIES'] as $obj){
+                            $this->logger->write("Api : uploaddebitnote() : The PRODUCTCODE is " . $obj['PRODUCTCODE'], 'r');
+
+                            $ii = 0;
+                            $product_skip_flag = 0;
+
+                            foreach ($mapped_fees as $m_obj) {
+                                if(strtoupper(trim($m_obj['productcode'])) == strtoupper(trim($obj['PRODUCTCODE']))){
+                                    $this->logger->write("Api : uploaddebitnote() : The product " . $obj['PRODUCTCODE'] . " is mapped to a tax/fee " . $m_obj['feecode'], 'r');
+
+                                    $f_qty = $this->util->removecommasfromamount(trim($obj['QTY']));
+                                    $f_unit = $this->util->removecommasfromamount(trim($obj['RATE']));
+                                    $this->logger->write("Api : uploaddebitnote() : The previous amount on this product is " . $m_obj['amount'], 'r');
+                                    $mapped_fees[$ii]['amount'] = $m_obj['amount'] + ($f_qty * $f_unit);
+                                    $product_skip_flag = 1;
+                                    break;
+                                }
+
+                                $ii = $ii + 1;
+                            }
+
+                            if ($product_skip_flag == 1){
+                                continue;
+                            }
+                            
+                            $product->getByErpCode(trim($obj['PRODUCTCODE']));
+                            $measureunit->getByCode($product->measureunit);
+
+                            $lineExciseDetail = NULL;
+                            
+                            $qty = $this->util->removecommasfromamount(trim($obj['QTY']));
+                            $unit = $this->util->removecommasfromamount(trim($obj['RATE']));
+                            $amount = $this->util->removecommasfromamount(trim($obj['AMOUNT']));
+                            $erpTaxRate = empty(trim($obj['TAXRATE']))? 0 : $this->util->removecommasfromamount(trim($obj['TAXRATE']));
+                            $discount = empty(trim($obj['DISCOUNT']))? 0 : (float)$this->util->removecommasfromamount(trim($obj['DISCOUNT']));
+                            $discountpct = empty(trim($obj['DISCOUNTPCT']))? 0 : (float)$this->util->removecommasfromamount(trim($obj['DISCOUNTPCT']));
+
+                            // Respect explicit inventory discount flags from ERP payload when provided.
+                            $lineDiscountFlag = '';
+                            if (isset($obj['DISCOUNTFLAG'])) {
+                                $lineDiscountFlag = strtoupper(trim((string)$obj['DISCOUNTFLAG']));
+                            } elseif (isset($obj['discountflag'])) {
+                                $lineDiscountFlag = strtoupper(trim((string)$obj['discountflag']));
+                            }
+
+                            if (in_array($lineDiscountFlag, array('1', 'YES', 'Y', 'TRUE'), true)) {
+                                $lineDiscountFlag = '1';
+                            } elseif (in_array($lineDiscountFlag, array('2', '0', 'NO', 'N', 'FALSE'), true)) {
+                                $lineDiscountFlag = '2';
+                            } else {
+                                $lineDiscountFlag = '';
+                            }
+
+                            // Maintainer note (2026-04-14): enforce explicit discount semantics.
+                            // When a line carries discount amount/percentage, ERP must send DISCOUNTFLAG too.
+                            // Maintainer note (2026-04-17): DISCOUNTPCT is a decimal fraction (0.25 = 25%).
+                            // For DISCOUNTFLAG=1, both DISCOUNT and DISCOUNTPCT must be non-empty and > 0.
+                            $discountRaw = isset($obj['DISCOUNT']) ? trim((string)$obj['DISCOUNT']) : '';
+                            $discountPctRaw = isset($obj['DISCOUNTPCT']) ? trim((string)$obj['DISCOUNTPCT']) : '';
+                            $discountAmountValue = ($discountRaw !== '') ? (float)$this->util->removecommasfromamount($discountRaw) : 0;
+                            $discountPctValue = ($discountPctRaw !== '') ? (float)$this->util->removecommasfromamount($discountPctRaw) : 0;
+                            $hasLineDiscount = ($discountAmountValue > 0 || $discountPctValue > 0);
+
+                            if ($discountPctRaw !== '' && $discountPctValue > 1) {
+                                $this->logger->write("Api : uploaddebitnote() : DISCOUNTPCT must be a decimal fraction for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has invalid DISCOUNTPCT. Send a decimal fraction (e.g. 0.25 for 25%).";
+                                $this->code = '-999';
+                                break;
+                            }
+
+                            // Maintainer note (2026-04-14): fail fast to avoid implicit flag inference.
+                            if ($hasLineDiscount && $lineDiscountFlag == '') {
+                                $this->logger->write("Api : uploaddebitnote() : DISCOUNTFLAG is required when DISCOUNT or DISCOUNTPCT is populated for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has DISCOUNT/DISCOUNTPCT but no valid DISCOUNTFLAG. Expected 1 or 2.";
+                                $this->code = '-999';
+                                break;
+                            }
+
+                            if ($lineDiscountFlag == '1' && ($discountAmountValue <= 0 || $discountPctValue <= 0)) {
+                                $this->logger->write("Api : uploaddebitnote() : DISCOUNT and DISCOUNTPCT are mandatory and must be > 0 when DISCOUNTFLAG=1 for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has DISCOUNTFLAG=1 but DISCOUNT and DISCOUNTPCT are missing/zero.";
+                                $this->code = '-999';
+                                break;
+                            }
+                            
+                            $taxid = $this->util->getinvoicetaxrate_v2($json['INDUSTRYCODE'], $json['BUYERTYPE'], trim($obj['PRODUCTCODE']), trim($json['BUYERTIN']), $this->appsettings['OVERRIDE_TAXRATE_FLAG'], $this->appsettings['TAXPAYER_CHECK_FLAG']);
+                            $this->logger->write("Api : uploadinvoice() : The computed TAXID is " . $taxid, 'r');
+                            $tr->getByID($taxid);
+
+                            if (trim($product->commoditycategorycode) == '96010102') {
+                                $this->logger->write("Api : uploaddebitnote() : The product code is 96010102. Hard coding the tax id to 13", 'r');
+                                $taxid = '13';
+                                $tr->getByID($taxid);
+                            }
+
+                            $buyerPlaceOfBusi = isset($json['BUYERPLACEOFBUSI']) ? trim($json['BUYERPLACEOFBUSI']) : '';
+
+                            if (stripos(strtolower($buyerPlaceOfBusi), 'uganda') !== false) {
+                                $this->logger->write("Api : uploaddebitnote() : This is a local invoice", 'r');
+
+                                if (strlen(trim($product->exciseDutyCode)) != 0 && trim($product->exciseDutyCode) != 'NULL' && trim($product->hasexcisetax) == '101') {
+                                    $this->logger->write("Api : uploaddebitnote() : The product has excise duty", 'r');
+                                    $exciseduty_details = $this->util->computeExciseDuty($this->userid_u, $product->code, $qty, $unit, $amount, $discount, $discountpct);
+                                    if (is_array($exciseduty_details) && isset($exciseduty_details[0])) {
+                                        $lineExciseDetail = isset($exciseduty_details[0][0]) ? $exciseduty_details[0][0] : $exciseduty_details[0];
+                                    }
+
+                                    if (is_array($lineExciseDetail) && $qty > 0 && isset($lineExciseDetail['exciseTax'])) {
+                                        $unit = (float)$unit + ((float)$lineExciseDetail['exciseTax'])/$qty;
+                                    }
+                                } else {
+                                    $this->logger->write("Api : uploaddebitnote() : The product has NO excise duty", 'r');
+                                }
+                            } else {
+                                $this->logger->write("Api : uploaddebitnote() : The place of business is " . $buyerPlaceOfBusi, 'r');
+
+                                if(strtoupper(trim($json['NONRESIDENTFLAG'])) == '1'){
+                                    $this->logger->write("Api : uploaddebitnote() : The buyer is Non-Resident", 'r');
+
+                                    if(trim($json['INDUSTRYCODE']) == '112' || trim($json['INDUSTRYCODE']) == '102'){
+                                        $this->logger->write("Api : uploaddebitnote() : This is an export/export service", 'r');
+                                        $taxid = '2';
+                                        $tr->getByID($taxid);
+                                    }
+                                } else {
+                                    $this->logger->write("Api : uploaddebitnote() : The buyer is a Resident", 'r');
+
+                                    if (strlen(trim($product->exciseDutyCode)) != 0 && trim($product->exciseDutyCode) != 'NULL' && trim($product->hasexcisetax) == '101') {
+                                        $this->logger->write("Api : uploaddebitnote() : The product has excise duty", 'r');
+                                        $exciseduty_details = $this->util->computeExciseDuty($this->userid_u, $product->code, $qty, $unit, $amount, $discount, $discountpct);
+                                        if (is_array($exciseduty_details) && isset($exciseduty_details[0])) {
+                                            $lineExciseDetail = isset($exciseduty_details[0][0]) ? $exciseduty_details[0][0] : $exciseduty_details[0];
+                                        }
+
+                                        if (is_array($lineExciseDetail) && $qty > 0 && isset($lineExciseDetail['exciseTax'])) {
+                                            $unit = (float)$unit + ((float)$lineExciseDetail['exciseTax'])/$qty;
+                                        }
+                                    } else {
+                                        $this->logger->write("Api : uploaddebitnote() : The product has NO excise duty", 'r');
+                                    }
+                                }
+                            }
+
+                            $taxcode = $tr->code;
+                            
+                            if ($lineDiscountFlag == '1') {
+                                $discountpct = $discountPctValue;
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
+                            } elseif ($discountpct == 0 && $discount > 0 && (float)$amount > 0) {
+                                $discountpct = $discount/$amount;
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
+                            } else {
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
+                            }
+                            
+                            if (trim($taxcode) == '' || empty($taxcode)) {
+                                $this->logger->write("Api : uploaddebitnote() : The PRODUCTCODE " . $obj['PRODUCTCODE'] . " does not have a TAXCODE", 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " does not have a TAXCODE!";
+                                $this->code = '-999';
+                                break;
+                            } else {
+                                
+                                if (trim($taxid) == '' || empty($taxid)) {
+                                    $this->logger->write("Api : uploaddebitnote() : The TAXCODE on PRODUCTCODE " . $obj['PRODUCTCODE'] . " is not defined", 'r');
+                                    $this->message = "The TAXCODE on PRODUCTCODE " . $obj['PRODUCTCODE'] . " is not defined!";
+                                    $this->code = '-999';
+                                    break;
+                                } else {
+                                    if ($taxid == $this->appsettings['DEEMEDTAXRATE']) {
+                                        $deemedflag = 'YES';
+                                    } else {
+                                        $deemedflag = 'NO';
+                                    }
+                                    
+                                    $this->logger->write("Api : uploaddebitnote() : The final TAXID is " . $taxid, 'r');
+                                    
+                                    $taxname = $tr->name;
+                                    $taxcategory = $tr->category;
+                                    $taxdisplaycategory = $tr->displayCategoryCode;
+                                    $taxdescription = $tr->description;
+                                    $rate = $tr->rate? $tr->rate : $erpTaxRate;
+                                    
+                                    if ($pricevatinclusive == 'NO') {
+                                        $this->logger->write("Api : uploaddebitnote() : The price is tax exclusive!", 'r');
+                                        
+                                        if ($rate > 0) {
+                                            $unit = $unit * ($rate + 1);
+                                        }
+                                        
+                                        $total = ($qty * $unit);
+                                        $discount = $discountpct * $total;
+                                        $gross = $total;
+                                        $discount = (-1) * $discount;
+                                        $tax = ($gross/($rate + 1)) * $rate;
+                                        $net = $gross - $tax;
+                                    } else {
+                                        $this->logger->write("Api : uploaddebitnote() : The price is tax inclusive!", 'r');
+                                        
+                                        $total = ($qty * $unit);
+                                        $discount = $discountpct * $total;
+                                        $gross = $total;
+                                        $discount = (-1) * $discount;
+                                        $tax = ($gross/($rate + 1)) * $rate;
+                                        $net = $gross - $tax;
+                                    }
+                                    
+                                    if ($this->vatRegistered == 'N') {
+                                        $tax = 0;
+                                        $taxcategory = NULL;
+                                        $taxcode = NULL;
+                                    }
+                                    
+                                    $netamount = $netamount + $net;
+                                    $taxamount = $taxamount + $tax;
+                                    
+                                    $grossamount = $grossamount + $gross;
+                                    $itemcount = $itemcount + 1;
+                                    
+                                    // Explicit flag overrides inferred flag when present.
+                                    if ($lineDiscountFlag == '1') {
+                                        $discountflag = 'YES';
+                                    } elseif ($lineDiscountFlag == '2') {
+                                        $discountflag = 'NO';
+                                    } elseif ($discount == 0) {
+                                        $discountflag = 'NO';
+                                    } else {
+                                        $discountflag = 'YES';
+                                    }
+                                    
+                                    $effectiveDiscountFlag = trim($discountflag) == 'NO'? '2' : '1';
+                                    
+                                    $ordernumber = NULL;
+                                    
+                                    try {
+                                        $o_data = array ();
+                                        $r = $this->db->exec(array('SELECT g.ordernumber "ordernumber" FROM tblgooddetails g JOIN tblinvoices i ON i.gooddetailgroupid = g.groupid AND i.einvoicenumber = "' . $oriinvoiceno . '" WHERE TRIM(g.itemcode) = "' . trim($obj['PRODUCTCODE']) . '" ORDER BY g.id ASC'));
+                                        $this->logger->write($this->db->log(TRUE), 'r');
+                                        foreach ( $r as $set ) {
+                                            $o_data [] = $set;
+                                        }
+                                        $gIndex = sizeof($o_data);
+                                        $this->logger->write("Api : uploadcreditnote() : The order number INDEX for product " . trim($obj['PRODUCTCODE']) . " is: " . $gIndex, 'r');
+                                        $ordernumber = $o_data[0]['ordernumber'];
+                                        $this->logger->write("Api : uploaddebitnote() : The order number for product " . trim($obj['PRODUCTCODE']) . " is: " . $ordernumber, 'r');
+                                    } catch (Exception $e) {
+                                        $this->logger->write("Api : uploaddebitnote() : The operation to retrieve the order number was not successful. The error messages is " . $e->getMessage(), 'r');
+                                    }
+                                    
+                                    $goods[] = array(
+                                        'groupid' => NULL,
+                                        'item' => $product->name,
+                                        'itemcode' => trim($obj['PRODUCTCODE']),
+                                        'qty' => $qty,
+                                        'unitofmeasure' => $product->measureunit,
+                                        'unitprice' => $unit,
+                                        'total' => $total,
+                                        'taxid' => $taxid,
+                                        'taxrate' => $rate,
+                                        'tax' => $tax,
+                                        'discounttotal' => $discount,
+                                        'discounttaxrate' => $rate,
+                                        'discountpercentage' => $discountpct,
+                                        'ordernumber' => empty($ordernumber)? NULL : $ordernumber,
+                                        'discountflag' => $effectiveDiscountFlag,
+                                        'deemedflag' => (strtoupper(trim($deemedflag)) == 'NO'? '2' : '1'),
+                                        'exciseflag' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseFlag']) ? $lineExciseDetail['exciseFlag'] : NULL,
+                                        'categoryid' => is_array($lineExciseDetail) && isset($lineExciseDetail['categoryId']) ? $lineExciseDetail['categoryId'] : NULL,
+                                        'categoryname' => is_array($lineExciseDetail) && isset($lineExciseDetail['categoryName']) ? $lineExciseDetail['categoryName'] : NULL,
+                                        'goodscategoryid' => $product->commoditycategorycode,
+                                        'goodscategoryname' => NULL,
+                                        'exciserate' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseRate']) ? $lineExciseDetail['exciseRate'] : NULL,
+                                        'exciserule' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseRule']) ? $lineExciseDetail['exciseRule'] : NULL,
+                                        'excisetax' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseTax']) ? $lineExciseDetail['exciseTax'] : NULL,
+                                        'pack' => is_array($lineExciseDetail) && isset($lineExciseDetail['pack']) ? $lineExciseDetail['pack'] : NULL,
+                                        'stick' => is_array($lineExciseDetail) && isset($lineExciseDetail['stick']) ? $lineExciseDetail['stick'] : NULL,
+                                        'exciseunit' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseUnit']) ? $lineExciseDetail['exciseUnit'] : NULL,
+                                        'excisecurrency' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseCurrency']) ? $lineExciseDetail['exciseCurrency'] : NULL,
+                                        'exciseratename' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseRateName']) ? $lineExciseDetail['exciseRateName'] : NULL,
+                                        'taxdisplaycategory' => $taxdisplaycategory,
+                                        'taxcategory' => $taxcategory,
+                                        'taxcategoryCode' => $taxcode,
+                                        'unitofmeasurename' => $measureunit->name,
+                                        'pieceMeasureUnit' => $product->piecemeasureunit,
+                                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                                        'vatProjectId' => trim($json['PROJECTID']),
+                                        'vatProjectName' => trim($json['PROJECTNAME']),
+                                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE'])),
+                                        'totalWeight' => empty(trim($obj['TOTALWEIGHT']))? '0' : trim($obj['TOTALWEIGHT']),
+                                        'pieceQty' => trim($json['INDUSTRYCODE']) == '102'? $qty : NULL
+                                    );
+                                    
+                                    if ($this->vatRegistered == 'Y') {
+                                        $taxes[] = array(
+                                            'discountflag' => $effectiveDiscountFlag,
+                                            'discounttotal' => $discount,
+                                            'discounttaxrate' => $rate,
+                                            'discountpercentage' => $discountpct,
+                                            'd_netamount' => NULL,
+                                            'd_taxamount' => NULL,
+                                            'd_grossamount' => NULL,
+                                            'groupid' => NULL,
+                                            'goodid' => NULL,
+                                            'taxdisplaycategory' => $taxdisplaycategory,
+                                            'taxcategory' => $taxcategory,
+                                            'taxcategoryCode' => $taxcode,
+                                            'netamount' => $net,
+                                            'taxrate' => $rate,
+                                            'taxamount' => $tax,
+                                            'grossamount' => $gross,
+                                            'exciseunit' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseUnit']) ? $lineExciseDetail['exciseUnit'] : NULL,
+                                            'excisecurrency' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseCurrency']) ? $lineExciseDetail['exciseCurrency'] : NULL,
+                                            'taxratename' => $taxname,
+                                            'taxdescription' => $taxdescription
+                                        );
+
+                                        if (is_array($lineExciseDetail)) {
+                                            $taxes[] = array(
+                                                'discountflag' => $effectiveDiscountFlag,
+                                                'discounttotal' => $discount,
+                                                'discounttaxrate' => $rate,
+                                                'discountpercentage' => $discountpct,
+                                                'd_netamount' => NULL,
+                                                'd_taxamount' => NULL,
+                                                'd_grossamount' => NULL,
+                                                'groupid' => NULL,
+                                                'goodid' => NULL,
+                                                'taxdisplaycategory' => $taxdisplaycategory,
+                                                'taxcategory' => 'E: Excise Duty',
+                                                'taxcategoryCode' => '05',
+                                                'netamount' => isset($lineExciseDetail['exciseTax']) ? ((float)$net - (float)$lineExciseDetail['exciseTax']) : $net,
+                                                'taxrate' => isset($lineExciseDetail['exciseRate']) ? $lineExciseDetail['exciseRate'] : NULL,
+                                                'taxamount' => isset($lineExciseDetail['exciseTax']) ? $lineExciseDetail['exciseTax'] : 0,
+                                                'grossamount' => $net,
+                                                'exciseunit' => isset($lineExciseDetail['exciseUnit']) ? $lineExciseDetail['exciseUnit'] : NULL,
+                                                'excisecurrency' => isset($lineExciseDetail['exciseCurrency']) ? $lineExciseDetail['exciseCurrency'] : NULL,
+                                                'taxratename' => isset($lineExciseDetail['exciseRateName']) ? $lineExciseDetail['exciseRateName'] : NULL,
+                                                'taxdescription' => 'E'
+                                            );
+                                        }
+                                    }
+                                }
+                                
+                            }
+                        }
+                        
+                        if (sizeof($goods) > 0) {
+                            foreach ($mapped_fees as $m_obj) {
+                                $this->logger->write("Api : uploaddebitnote() : Adding fees to the tax array", 'r');
+
+                                $tr = new taxrates($this->db);
+                                $tr->getByCode($m_obj['feecode']);
+                                $taxcode = $tr->code;
+                                $taxname = $tr->name;
+                                $taxcategory = $tr->category;
+                                $taxdescription = $tr->description;
+                                $taxdisplaycategory = $tr->displayCategoryCode;
+
+                                if((float)$m_obj['amount'] <> 0){
+                                    $taxes[] = array(
+                                        'discountflag' => '1',
+                                        'discounttotal' => NULL,
+                                        'discounttaxrate' => NULL,
+                                        'discountpercentage' => NULL,
+                                        'd_netamount' => NULL,
+                                        'd_taxamount' => NULL,
+                                        'd_grossamount' => NULL,
+                                        'groupid' => NULL,
+                                        'goodid' => NULL,
+                                        'taxdisplaycategory' => $taxdisplaycategory,
+                                        'taxcategory' => $taxcategory,
+                                        'taxcategoryCode' => $taxcode,
+                                        'netamount' => 0,
+                                        'taxrate' => $m_obj['amount'],
+                                        'taxamount' => $m_obj['amount'],
+                                        'grossamount' => $m_obj['amount'],
+                                        'exciseunit' => NULL,
+                                        'excisecurrency' => NULL,
+                                        'taxratename' => $taxname,
+                                        'taxdescription' => $taxdescription
+                                    );
+                                }
+                            }
+
+                            $this->logger->write("Api : uploaddebitnote() : The GOODS count: " . sizeof($goods), 'r');
+                            $this->logger->write("Api : uploaddebitnote() : The TAX count: " . sizeof($taxes), 'r');
+                            $this->logger->write("Api : uploaddebitnote() : The PAYMENTS count: " . sizeof($payments), 'r');
+                            
+                            $this->logger->write("Api : uploaddebitnote() : The sent ERP branch is: " . $json['BRANCH'], 'r');
+                            $operating_branch = $this->util->mapbranchcode(trim($json['BRANCH']));
+                            $tmp_branch = '';
+
+                            if (trim($operating_branch) == '' || empty($operating_branch)) {
+                                $this->logger->write("Api : uploaddebitnote() : The ERP did not send a branch OR sent an unmapped branch.", 'r');
+                                $tmp_branch = $branch->uraid;
+                            } else {
+                                $tmp_branch = $operating_branch;
+                            }
+
+                            $this->logger->write("Api : uploaddebitnote() : The FINAL URA branch Id is: " . $tmp_branch, 'r');
+
+                            $data = $this->util->uploaddebitnote($this->userid_u, $tmp_branch, $buyer, $debitnotedetails, $goods, $payments, $taxes);
+                            $data = json_decode($data, true);
+                            
+                            if (isset($data['returnCode'])){
+                                $this->logger->write("Api : uploaddebitnote() : The operation to upload the debitnote not successful. The error message is " . $data['returnMessage'], 'r');
+                                $this->message = $data['returnMessage'];
+                                $this->code = $data['returnCode'];
+                                
+                                $body = $this->code . ' : ' . $this->message;
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                            } else {
+                                if (isset($data['basicInformation'])){
+                                    $antifakeCode = $data['basicInformation']['antifakeCode'];
+                                    $debitnoteId = $data['basicInformation']['invoiceId'];
+                                    $debitnoteNo = $data['basicInformation']['invoiceNo'];
+                                    
+                                    $issuedDate = $data['basicInformation']['issuedDate'];
+                                    $issuedDate = str_replace('/', '-', $issuedDate);
+                                    $issuedDate = date("Y-m-d H:i:s", strtotime($issuedDate));
+                                    
+                                    $issuedTime = $data['basicInformation']['issuedDate'];
+                                    $issuedTime = str_replace('/', '-', $issuedTime);
+                                    $issuedTime = date("Y-m-d H:i:s", strtotime($issuedTime));
+                                    
+                                    $issuedDatePdf = $data['basicInformation']['issuedDatePdf'];
+                                    $issuedDatePdf = str_replace('/', '-', $issuedDatePdf);
+                                    $issuedDatePdf = date("Y-m-d H:i:s", strtotime($issuedDatePdf));
+                                    
+                                    $oriInvoiceId = $data['basicInformation']['oriInvoiceId'];
+                                    $isInvalid = $data['basicInformation']['isInvalid'];
+                                    $isRefund = $data['basicInformation']['isRefund'];
+                                    $currencyRate = $data['basicInformation']['currencyRate'];
+                                    
+                                    $debitnoteid = $debitnoteId;
+                                    $debitnotenumber = $debitnoteNo;
+                                    $issueddate = $issuedDate;
+                                    $fdn = $antifakeCode;
+                                }
+                                
+                                if (isset($data['summary'])){
+                                    $grossAmount = $data['summary']['grossAmount'];
+                                    $itemCount = $data['summary']['itemCount'];
+                                    $netAmount = $data['summary']['netAmount'];
+                                    $qrCode = $data['summary']['qrCode'];
+                                    $taxAmount = $data['summary']['taxAmount'];
+                                    $modeCode = $data['summary']['modeCode'];
+                                    
+                                    $mode = new modes($this->db);
+                                    $mode->getByCode($modeCode);
+                                    $modeName = $mode->name;
+                                    
+                                    $f = new \NumberFormatter("en", NumberFormatter::SPELLOUT);
+                                    $grossAmountWords = $f->format($grossAmount);
+                                    
+                                    $qr = $qrCode;
+                                }
+                                
+                                $debitnotedetails['einvoicedatamatrixcode'] = $qrCode;
+                                $debitnotedetails['grossamountword'] = $grossAmountWords;
+                                $debitnotedetails['modename'] = $modeName;
+                                $debitnotedetails['modecode'] = $modeCode;
+                                $debitnotedetails['taxamount'] = $taxAmount;
+                                $debitnotedetails['netamount'] = $netAmount;
+                                $debitnotedetails['itemcount'] = $itemCount;
+                                $debitnotedetails['grossamount'] = $grossAmount;
+                                $debitnotedetails['antifakecode'] = $antifakeCode;
+                                $debitnotedetails['issueddate'] = $issuedDate;
+                                $debitnotedetails['einvoicenumber'] = $debitnoteNo;
+                                $debitnotedetails['edebitnoteid'] = $debitnoteId;
+                                $debitnotedetails['isinvalid'] = $isRefund;
+                                $debitnotedetails['isrefund'] = $isInvalid;
+                                $debitnotedetails['oriinvoiceid'] = $oriInvoiceId;
+                                $debitnotedetails['issueddatepdf'] = $issuedDatePdf;
+                                $debitnotedetails['issuedtime'] = $issuedTime;
+                                $debitnotedetails['origrossamount'] = '0';
+                                $debitnotedetails['currencyRate'] = $currencyRate;
+                                
+                                $inv_status = $this->util->createdebitnote($debitnotedetails, $goods, $taxes, $buyer, $this->userid_u);
+                                
+                                if ($inv_status) {
+                                    $this->logger->write("Api : uploadproduct() : The debit note was created on eTW successfully", 'r');
+                                } else {
+                                    $this->logger->write("Api : uploadproduct() : The debit note was NOT created on eTW", 'r');
+                                }
+                                
+                                $this->message = 'The operation to upload the debit note was successful';
+                                $this->code = '000';
+                            }
+                        } else {
+                            $this->logger->write("Api : uploadcreditnote() : No goods details were supplied!", 'r');
+                            $this->message = "No goods details were supplied!";
+                            $this->code = '-999';
+                            
+                            $body = $this->code . ' : ' . $this->message;
+                            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                        }
+                        
+                    } else {
+                        $this->logger->write("Api : uploaddebitnote() : No goods details were supplied!", 'r');
+                        $this->message = "No goods details were supplied!";
+                        $this->code = '-999';
+                        
+                        $body = $this->code . ' : ' . $this->message;
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    }
+                    
+                } else {
+                    $this->message = 'The debit note has already been uploaded into EFRIS';
+                    $this->code = '99';
+                    
+                    $debitnoteid = $inv_check->einvoiceid;
+                    $debitnotenumber = $inv_check->einvoicenumber;
+                    $issueddate = $inv_check->issuedtime;
+                    $fdn = $inv_check->antifakecode;
+                    $qr = $inv_check->einvoicedatamatrixcode;
+                }
+            } else {
+                $this->logger->write("Api : uploaddebitnote() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+            
+            $activity = 'UPLOADDEBITNOTE: ' . $vchnumber . ': ' . $vchref . ': ' . $this->message;
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+        }
+               
+        
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array(
+                "INVID" => $debitnoteid,
+                "INVNO" => $fdn,
+                "ISSUEDT" => $issueddate,
+                "FDN" => $debitnotenumber,
+                "QRCODE" => $qr
+            )
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+    }
+    
+    
+    /**
+     *	@name checktaxpayer
+     *  @desc checks whether the taxpayer is tax exempt/Deemed
+     *	@return string response
+     *	@param NULL
+     **/
+    function checktaxpayer(){
+        $operation = NULL; //tblevents
+        $permission = 'QUERYTAXPAYER'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            $tin = trim($json['TIN']);
+            $commodity = trim($json['COMMODITYCODE']);
+            $taxpayerType = '';
+            $commodityCategoryTaxpayerType = '';
+            
+            $this->logger->write("Api : checktaxpayer() : The userid is: " . $this->userid_u, 'r');
+            $this->logger->write("Api : checktaxpayer() : Checking permissions", 'r');
+            if ($this->userpermissions[$permission]) {
+                
+                if (trim($tin) == '' || empty($tin)) {
+                    $this->logger->write("Api : validatetin() : No TIN was supplied", 'r');
+                    
+                    $this->message = "No TIN was supplied";
+                    $this->code = "-999";
+                    
+                    $body = $this->code . ' : ' . $this->message;
+                    $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                } elseif (trim($commodity) == '' || empty($commodity)) {
+                    $this->logger->write("Api : validatetin() : No Commodity Category was supplied", 'r');
+                    
+                    $this->message = "No Commodity Category was supplied";
+                    $this->code = "-998";
+                    
+                    $body = $this->code . ' : ' . $this->message;
+                    $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                } else {
+                    $data = $this->util->checktaxpayer($this->userid_u, $tin, $commodity);//will return JSON.
+                    //var_dump($data);
+                    $data = json_decode($data, true); //{"commodityCategory":[],"taxpayerType":"101"}
+                    
+                    if (isset($data['commodityCategory'])){
+                        
+                        foreach($data['commodityCategory'] as $elem){
+                            
+                            if ($elem['commodityCategoryCode'] == $commodity) {
+                                $commodityCategoryTaxpayerType = $this->util->decodetaxpayertypecode($elem['commodityCategoryTaxpayerType']);
+                                
+                                $this->logger->write("Api : checktaxpayer() : The tax payer type for this commodity code is " . $commodityCategoryTaxpayerType, 'r');
+                            }
+                            
+                        }
+                        
+                        if (isset($data['taxpayerType'])){
+                            $taxpayerType = $this->util->decodetaxpayertypecode($data['taxpayerType']);
+                        }
+                        
+                        $this->logger->write("Api : checktaxpayer() : The operation to check the taxpayer was successful", 'r');
+                        $this->message = "The operation to query the taxpayer was successful";
+                        $this->code = '00';
+                    } elseif (isset($data['returnCode'])){
+                        $this->logger->write("Api : checktaxpayer() : The operation to check the taxpayer not successful. The error message is " . $data['returnMessage'], 'r');
+                        $this->message = $data['returnMessage'];
+                        $this->code = $data['returnCode'];
+                        
+                        $body = $this->code . ' : ' . $this->message;
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    } else {
+                        $this->logger->write("Api : checktaxpayer() : The operation to check the taxpayer was not successful", 'r');
+                        $this->message = "The operation to check the taxpayer was not successful";
+                        $this->code = '99';
+                        
+                        $body = $this->code . ' : ' . $this->message;
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    }
+                }
+                
+                
+            } else {
+                $this->logger->write("Api : checktaxpayer() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+            
+            
+            
+            $activity = 'CHECKTAXPAYER: ' . $tin . ': ' . $this->message;
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+        }
+                
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array(
+                "TAXPAYERTYPE" => $taxpayerType,
+                "COMMODITYTAXPAYERTYPE" => $commodityCategoryTaxpayerType
+            )
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+        
+    }
+    
+    /**
+     *	@name currencyquery
+     *  @desc query currencies
+     *	@return string response
+     *	@param NULL
+     **/
+    function currencyquery(){
+        $operation = NULL; //tblevents
+        $permission = 'FETCHCURRENCYRATES'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            $this->logger->write("Api : currencyquery() : The userid is: " . $this->userid_u, 'r');
+            $this->logger->write("Api : currencyquery() : Checking permissions", 'r');
+            if ($this->userpermissions[$permission]) {
+                $data = $this->util->fetchcurrencyrates($this->userid_u); // will return JSON.
+                $data = json_decode($data, true);
+                
+                $currency = array();
+                $currencyName = '';
+                $currencyRate = '';
+                
+                if (isset($data[0]['currency'])) {
+ 
+                    foreach ($data as $elem) {
+                        $currencyName = $elem['currency'];
+                        $currencyRate = $elem['rate'];
+                        
+                        if ($currencyName) {
+                            $currency[$currencyName] = $currencyRate;
+                        }
+                        
+                    }
+                    
+                    $this->logger->write("Api : currencyquery() : The operation to fetch the currencies was successful", 'r');
+                    $this->message = "The operation to fetch the currencies was successful";
+                    $this->code = '00';
+                } elseif (isset($data['returnCode'])){
+                    $this->logger->write("Api : currencyquery() : The operation to fetch the currencies not successful. The error message is " . $data['returnMessage'], 'r');
+                    $this->message = $data['returnMessage'];
+                    $this->code = $data['returnCode'];
+                    
+                    $body = $this->code . ' : ' . $this->message;
+                    $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                } else {
+                    $this->logger->write("Api : currencyquery() : The operation to fetch the currencies was not successful", 'r');
+                    $this->message = "The operation to fetch the currencies was not successful";
+                    $this->code = '99';
+                    
+                    $body = $this->code . ' : ' . $this->message;
+                    $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                }
+            } else {
+                $this->logger->write("Api : currencyquery() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+            
+            
+            
+            
+            $activity = 'CURRENCYQUERY: ' . ': ' . $this->message;
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+        }
+        
+ 
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => $currency
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+        
+    }
+    
+    
+    /**
+     *	@name querybranches
+     *  @desc query branches
+     *	@return string response
+     *	@param NULL
+     **/
+    function querybranches(){
+        $operation = NULL; //tblevents
+        $permission = 'FETCHBRANCHES'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            $this->logger->write("Api : querybranches() : The userid is: " . $this->userid_u, 'r');
+            $this->logger->write("Api : querybranches() : Checking permissions", 'r');
+            if ($this->userpermissions[$permission]) {
+                $data = $this->util->fetchbranches($this->userid_u); // will return JSON.
+                $data = json_decode($data, true);
+                
+                $branch = array();
+                $branchName = '';
+                $branchId = '';
+                
+                if (isset($data)) {
+                    
+                    foreach ($data as $elem) {
+                        $branchName = $elem['branchName'];
+                        $branchId = $elem['branchId'];
+                        
+                        if ($branchName) {
+                            $branch[$branchName] = $branchId;
+                        }
+                        
+                    }
+                    
+                    $this->logger->write("Api : querybranches() : The operation to fetch the branches was successful", 'r');
+                    $this->message = "The operation to fetch the branches was successful";
+                    $this->code = '00';
+                } elseif (isset($data['returnCode'])){
+                    $this->logger->write("Api : querybranches() : The operation to fetch the branches not successful. The error message is " . $data['returnMessage'], 'r');
+                    $this->message = $data['returnMessage'];
+                    $this->code = $data['returnCode'];
+                    
+                    $body = $this->code . ' : ' . $this->message;
+                    $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                } else {
+                    $this->logger->write("Api : querybranches() : The operation to fetch the branches was not successful", 'r');
+                    $this->message = "The operation to fetch the branches was not successful";
+                    $this->code = '99';
+                    
+                    $body = $this->code . ' : ' . $this->message;
+                    $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                }
+            } else {
+                $this->logger->write("Api : querybranches() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+            
+            
+            
+            
+            $activity = 'BRANCHQUERY: ' . ': ' . $this->message;
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+        }
+        
+        
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => $branch
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+        
+    }
+    
+    /**
+     *	@name stockin
+     *  @desc add stock to a product
+     *	@return string response
+     *	@param NULL
+     **/
+    function stockin(){
+        $operation = NULL; //tblevents
+        $permission = 'STOCKIN'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            $productcode = strtoupper(trim($json['PRODUCTCODE']));//KINOK-123
+            $suppliername = trim($json['SUPPLIERNAME']);
+            $suppliertin = trim($json['SUPPLIERTIN']);
+            $stockintype = trim($json['STOCKINTYPE']);
+            
+            /**
+             * Modification Date: 2022-06-14
+             * Modified By: Francis Lubanga
+             * Description: Mitigating the error "2129 : If 'stockInType' not equals to '103', productionBatchNo must be empty!"
+             * */
+            if($stockintype == '103'){//Manufacture/Assembling
+                $productiondate = empty(trim($json['PRODUCTIONDATE']))? '' : date('Y-m-d', strtotime(trim($json['PRODUCTIONDATE'])));
+                $batchno = trim($json['BATCHNUMBER']);
+            } else {
+                $productiondate = '';
+                $batchno = '';
+            }
+            
+            $unitprice = trim($json['UNITPRICE']);
+            $qty = trim($json['QTY']);
+            
+            $this->logger->write("Api : stockin() : The userid is: " . $this->userid_u, 'r');
+            $this->logger->write("Api : stockin() : Checking permissions", 'r');
+            if ($this->userpermissions[$permission]) {
+                $branch = new branches($this->db);
+                $branch->getByID($this->userbranch_u);
+                $errorCount = 0;
+                
+                /**
+                 * @desc Validate TIN number, if supplied.
+                 * @author francis.lubanga@gmail.com
+                 * @date 2022-06-13
+                 * 
+                 */
+                
+                if (trim($suppliertin) == '' || empty($suppliertin)) {
+                    $this->logger->write("Api : stockin() : The supplier TIN was not provided!", 'r');
+                    
+                    /*
+                    if($stockintype == '102'){
+                        $errorCount = $errorCount + 1;
+                        
+                        $this->logger->write("Api : stockin() : The operation to stock-in was not successful. The supplier TIN cannot be empty for stockin type Local Purchase", 'r');
+                        $this->message = "The operation to stock-in was not successful. The supplier TIN cannot be empty for stockin type Local Purchase";
+                        $this->code = '2081';
+                    }*/
+                } else {
+                    $v_data = $this->util->querytaxpayer($this->userid_u, $suppliertin);//will return JSON.
+                    $v_data = json_decode($v_data, true);
+                    
+                    if (isset($v_data['taxpayer'])){
+                        //$tin = $v_data['taxpayer']['tin'];
+                        $legalName = $v_data['taxpayer']['legalName'];
+                        
+                        $suppliername = $legalName; //Rename the supplier.
+                                               
+                    } elseif (isset($v_data['returnCode'])){
+                        $errorCount = $errorCount + 1;
+                        $this->logger->write("Api : stockin() : The operation to validate the supplier TIN was not successful. The error message is " . $v_data['returnMessage'], 'r');
+                        $this->message = $v_data['returnMessage'];
+                        $this->code = $v_data['returnCode'];
+                        
+                        $body = $this->code . ' : ' . $this->message;
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    } else {
+                        $errorCount = $errorCount + 1;
+                        $this->logger->write("Api : stockin() : The operation to validate the supplier TIN was not successful", 'r');
+                        $this->message = "The operation to validate the supplier TIN was not successful";
+                        $this->code = '99';
+                        
+                        $body = $this->code . ' : ' . $this->message;
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    }
+                }
+                
+                $this->logger->write("Api : stockin() : The error count is: " . $errorCount, 'r');
+                
+                if((int)$errorCount == 0){
+                    //**************STOCKIN START*********************
+                    $data = $this->util->stockin($this->userid_u, $branch->uraid, strtoupper($productcode), $batchno, $qty, $suppliertin, $suppliername, $stockintype, $productiondate, $unitprice);//will return JSON.
+                    
+                    $data = json_decode($data, true);
+                    
+                    
+                    if(isset($data['returnCode'])){
+                        $this->logger->write("Api : stockin() : The operation to increase stock was not successful. The error message is " . $data['returnMessage'], 'r');
+                        $this->message = $data['returnMessage'];
+                        $this->code = $data['returnCode'];
+                        
+                        $body = $this->code . ' : ' . $this->message;
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    } else {
+                        if ($data) {
+                            foreach($data as $elem){
+                                $this->message = $elem['returnMessage'];
+                                $this->code = $elem['returnCode'];
+                            }
+                        } else {
+                            $this->message = "The operation was successfully";
+                            $this->code = '00';
+                            $this->util->logstockadjustment($this->userid_u, strtoupper($productcode), $batchno, $qty, $suppliertin, $suppliername, $stockintype, $productiondate, $unitprice, trim($this->appsettings['STOCKINOPERATIONTYPE']), NULL, NULL, NULL, NULL, NULL, NULL);
+                        }
+                        
+                    }
+                    //**********STOCKIN END****************************
+                }  
+   
+                
+            } else {
+                $this->logger->write("Api : stockin() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+            
+            
+            
+            $activity = 'STOKIN: ' . strtoupper($productcode) . ': ' . $this->message;
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+        }
+        
+        
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array()
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+        
+    }
+    
+    /**
+     *	@name batchstockin
+     *  @desc add stock to mulitple products. this is a work-around for manufacturers who produce in batches
+     *	@return string response
+     *	@param NULL
+     **/
+    function batchstockin(){
+        $operation = NULL; //tblevents
+        $permission = 'STOCKIN'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            
+            
+            $stockintype = trim($json['STOCKINTYPE']);//101, 102, etc.
+            
+            $vchtype = trim($json['VOUCHERTYPE']);
+            $vchtypename = trim($json['VOUCHERTYPENAME']);
+            $vchnumber = trim($json['VOUCHERNUMBER']);
+            $vchref = trim($json['VOUCHERREF']);
+
+            // 2026-04-25: v12 validation hardening - voucher number is mandatory for batch stock-in reconciliation.
+            if (trim($vchnumber) == '' || empty($vchnumber)) {
+                $this->logger->write("Api : batchstockin() : No voucher number was supplied", 'r');
+                $this->message = "No voucher number was supplied";
+                $this->code = '-999';
+
+                $body = $this->code . ' : ' . $this->message;
+                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+            }
+            
+            $this->logger->write("Api : batchstockin() : The stockin type is " . $stockintype, 'r');
+            
+            $this->logger->write("Api : batchstockin() : The userid is: " . $this->userid_u, 'r');
+            $this->logger->write("Api : batchstockin() : Checking permissions", 'r');
+            if (trim($vchnumber) != '' && !empty($vchnumber) && $this->userpermissions[$permission]) {
+                $vch_check = new DB\SQL\Mapper($this->db, 'tblgoodsstockadjustment');
+                $vch_check->load(array('TRIM(voucherNumber)=? AND TRIM(voucherRef)=? AND TRIM(voucherType)=? AND TRIM(voucherTypeName)=?', $vchnumber, $vchref, $vchtype, $vchtypename));
+                $this->logger->write($this->db->log(TRUE), 'r');
+                
+                if($vch_check->dry ()){
+                    if (trim($stockintype) == '103') {//Manufacture
+                        $productiondate = date('Y-m-d', strtotime(trim($json['PRODUCTIONDATE'])));//1-Apr-2020  => 2020-04-01  date('Y-m-d', strtotime($date))
+                        $batchno = $vchnumber;//1
+                        $suppliername = '';
+                        $suppliertin = '';
+                    } else {
+                        $productiondate = '';
+                        $batchno = '';
+                        $suppliername = trim($json['SUPPLIERNAME']);
+                        $suppliertin = trim($json['SUPPLIERTIN']);
+                        
+                        $errorCount = 0;
+                        
+                        /**
+                         * @desc Validate TIN number, if supplied.
+                         * @author francis.lubanga@gmail.com
+                         * @date 2022-06-13
+                         *
+                         */
+                        
+                        if (trim($suppliertin) == '' || empty($suppliertin)) {
+                            $this->logger->write("Api : batchstockin() : The supplier TIN was not provided!", 'r');
+                        } else {
+                            $v_data = $this->util->querytaxpayer($this->userid_u, $suppliertin);//will return JSON.
+                            $v_data = json_decode($v_data, true);
+                            
+                            if (isset($v_data['taxpayer'])){
+                                //$tin = $v_data['taxpayer']['tin'];
+                                $legalName = $v_data['taxpayer']['legalName'];
+                                
+                                $suppliername = $legalName; //Rename the supplier.
+                                
+                            } elseif (isset($v_data['returnCode'])){
+                                $errorCount = $errorCount + 1;
+                                $this->logger->write("Api : batchstockin() : The operation to validate the supplier TIN was not successful. The error message is " . $v_data['returnMessage'], 'r');
+                                $this->message = $v_data['returnMessage'];
+                                $this->code = $v_data['returnCode'];
+                                
+                                $body = $this->code . ' : ' . $this->message;
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                            } else {
+                                $errorCount = $errorCount + 1;
+                                $this->logger->write("Api : batchstockin() : The operation to validate the supplier TIN was not successful", 'r');
+                                $this->message = "The operation to validate the supplier TIN was not successful";
+                                $this->code = '99';
+                                
+                                $body = $this->code . ' : ' . $this->message;
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                            }
+                        }
+                    }
+                    
+                    if((int)$errorCount == 0){
+                        $products = array();
+                        
+                        foreach ($json['INVENTORIES'] as $obj){
+                            $this->logger->write("Api : batchstockin() : The PRODUCTCODE is: " . trim($obj['PRODUCTCODE']), 'r');
+							
+							
+							/**
+							*Date: 2025-06-20
+							*Author: Francis Lubanga<francis.lubanga@gmail.com>
+							*Description: Exclude services from the list of products to be stocked in. This is a customisation for Tugende.
+							*/
+							$product_c = new products($this->db);
+							$product_c->getByErpCode(strtoupper(trim($obj['PRODUCTCODE'])));
+							
+							if($product_c->serviceMark == '101'){
+								$this->logger->write("Api : batchstockin() : The PRODUCTCODE " . trim($obj['PRODUCTCODE']) . " is a service. Skip!", 'r');
+								continue;
+							}
+							
+                            $products[] = array(
+                                'productCode' => strtoupper(trim($obj['PRODUCTCODE'])),//8762753
+                                'quantity' => trim($obj['QTY']),//23.0
+                                'unitPrice' => trim($obj['RATE'])//25000.00
+                            );
+                            /**
+                             *Date: 2025-11-13
+                             *Author: Francis Lubanga<francis.lubanga@gmail.com>
+                             *Description: Determing the unit price from the qty and price. This is a customisation for Tugende.
+                             */
+                        }
+                        
+                        
+                        $branch = new branches($this->db);
+                        $branch->getByID($this->userbranch_u);
+                        
+                        
+                        $data = $this->util->batchstockin($this->userid_u, $branch->uraid, $products, $batchno, $suppliertin, $suppliername, $stockintype, $productiondate);//will return JSON.
+                        
+                        $data = json_decode($data, true);
+                        
+                        
+                        
+                        if(isset($data['returnCode'])){
+                            $this->logger->write("Api : batchstockin() : The operation to increase stock was not successful. The error message is " . $data['returnMessage'], 'r');
+                            $this->message = $data['returnMessage'];
+                            $this->code = $data['returnCode'];
+                            
+                            $body = $this->code . ' : ' . $this->message;
+                            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                        } else {
+                            $this->logger->write("Api : batchstockin() : Here 1", 'r');
+                            if ($data) {
+                                $this->logger->write("Api : batchstockin() : Here 2", 'r');
+                                $this->message = '';
+                                $this->code = '';
+                                
+                                foreach($data as $elem){
+                                    $this->logger->write("Api : batchstockin() : The return code is: " . $elem['returnCode'] . ' - ' . $elem['returnMessage'], 'r');
+                                    $this->message = $this->message . $elem['returnMessage'] . '; ';
+                                    $this->code = $this->code . $elem['returnCode'] . '; ';
+                                }
+                                
+                                $this->message = "Partial Error. Contact your system administrator!";
+                                $this->code = '45';
+                            } else {
+                                $this->logger->write("Api : batchstockin() : Here 3", 'r');
+                                $this->message = "The operation was successful";
+                                $this->code = '00';
+                                
+                                foreach ($json['INVENTORIES'] as $obj){
+                                    $this->util->logstockadjustment($this->userid_u, strtoupper(trim($obj['PRODUCTCODE'])), $batchno, trim($obj['QTY']), $suppliertin, $suppliername, $stockintype, $productiondate, trim($obj['RATE']), trim($this->appsettings['STOCKINOPERATIONTYPE']), $vchtype, $vchtypename, $vchnumber, $vchref, NULL, NULL);
+                                }
+                                
+                            }
+                            
+                        }
+                    }
+                    
+                    
+                } else {
+                    $this->message = 'The voucher/journal has already been uploaded into EFRIS';
+                    $this->code = '99';
+                }
+            } else if (trim($vchnumber) != '' && !empty($vchnumber)) {
+                $this->logger->write("Api : batchstockin() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+            
+            
+            
+            $activity = 'BATCHSTOCKIN: ' . $vchnumber . ': ' . $vchref . ': ' . $this->message;
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+        }
+        
+        
+        
+        
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array()
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+        
+    }
+    
+    /**
+     *	@name stockout
+     *  @desc adjust stock of a product
+     *	@return string response
+     *	@param NULL
+     **/
+    function stockout(){
+        $operation = NULL; //tblevents
+        $permission = 'STOCKOUT'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            $productcode = strtoupper(trim($json['PRODUCTCODE']));//KINOK-123
+            $adjustmenttype = trim($json['ADJUSTMENTTYPE']);//102
+            $remarks = trim($json['REMARKS']);
+            $batchno = '';
+            $qty = trim($json['QTY']);
+            
+            $this->logger->write("Api : stockout() : The userid is: " . $this->userid_u, 'r');
+            $this->logger->write("Api : stockout() : Checking permissions", 'r');
+            if ($this->userpermissions[$permission]) {
+                $branch = new branches($this->db);
+                $branch->getByID($this->userbranch_u);
+                
+                
+                $data = $this->util->stockout($this->userid_u, $branch->uraid, strtoupper($productcode), $batchno, $qty, $adjustmenttype, $remarks);
+                
+                $data = json_decode($data, true);
+                $this->logger->write("Api : stockout() : The retuened data is : " . $data, 'r');
+                
+                if(isset($data['returnCode'])){
+                    $this->logger->write("Api : stockout() : The operation to decrease stock not successful. The error message is " . $data['returnMessage'], 'r');
+                    $this->message = $data['returnMessage'];
+                    $this->code = $data['returnCode'];
+                    
+                    $body = $this->code . ' : ' . $this->message;
+                    $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                } else {
+                    if ($data) {
+                        foreach($data as $elem){
+                            $this->message = $elem['returnMessage'];
+                            $this->code = $elem['returnCode'];
+                        }
+                    } else {
+                        $this->message = "The operation was successfully";
+                        $this->code = '00';
+                        $this->util->logstockadjustment($this->userid_u, strtoupper($productcode), $batchno, $qty, NULL, NULL, NULL, NULL, NULL, trim($this->appsettings['STOCKOUTOPERATIONTYPE']), NULL, NULL, NULL, NULL, $adjustmenttype, $remarks);
+                    }
+                    
+                }
+            } else {
+                $this->logger->write("Api : stockout() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+            
+            
+            
+            
+            $activity = 'STOKOUT: ' . $productcode . ': ' . $this->message;
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+        }
+        
+        
+        
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array()
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+        
+    }
+    
+    /**
+     *	@name batchstockout
+     *  @desc adjust stock of one or more product
+     *	@return string response
+     *	@param NULL
+     **/
+    function batchstockout(){
+        $operation = NULL; //tblevents
+        $permission = 'STOCKOUT'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            
+            $vchtype = trim($json['VOUCHERTYPE']);
+            $vchtypename = trim($json['VOUCHERTYPENAME']);
+            $vchnumber = trim($json['VOUCHERNUMBER']);
+            $vchref = trim($json['VOUCHERREF']);
+
+            // 2026-04-25: v12 validation hardening - voucher number is mandatory for batch stock-out reconciliation.
+            if (trim($vchnumber) == '' || empty($vchnumber)) {
+                $this->logger->write("Api : batchstockout() : No voucher number was supplied", 'r');
+                $this->message = "No voucher number was supplied";
+                $this->code = '-999';
+
+                $body = $this->code . ' : ' . $this->message;
+                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+            }
+            
+            $adjustmenttype = trim($json['ADJUSTMENTTYPE'])? trim(trim($json['ADJUSTMENTTYPE'])) : '102';//102
+            $remarks = trim($json['REMARKS']);
+            
+            $this->logger->write("Api : batchstockout() : The userid is: " . $this->userid_u, 'r');
+            $this->logger->write("Api : batchstockout() : Checking permissions", 'r');
+            if (trim($vchnumber) != '' && !empty($vchnumber) && $this->userpermissions[$permission]) {
+                $vch_check = new DB\SQL\Mapper($this->db, 'tblgoodsstockadjustment');
+                $vch_check->load(array('TRIM(voucherNumber)=? AND TRIM(voucherRef)=? AND TRIM(voucherType)=? AND TRIM(voucherTypeName)=?', $vchnumber, $vchref, $vchtype, $vchtypename));
+                $this->logger->write($this->db->log(TRUE), 'r');
+                
+                if($vch_check->dry ()){
+                    $products = array();
+                    
+                    foreach ($json['INVENTORIES'] as $obj){
+                        
+                        $this->logger->write("Api : batchstockout() : The PRODUCTCODE is: " . trim($obj['PRODUCTCODE']), 'r');
+                        $products[] = array(
+                            'productCode' => strtoupper(trim($obj['PRODUCTCODE'])),//8762753
+                            'quantity' => trim($obj['QTY']),//23.0
+                            'unitPrice' => trim($obj['RATE'])? trim($obj['RATE']) : ''//25000.00
+                        );
+                    }
+                    
+                    
+                    $branch = new branches($this->db);
+                    $branch->getByID($this->userbranch_u);
+                    
+                    
+                    $data = $this->util->batchstockout($this->userid_u, $branch->uraid, $products, $adjustmenttype, $remarks);//will return JSON.
+                    
+                    $data = json_decode($data, true);
+ 
+                    if(isset($data['returnCode'])){
+                        $this->logger->write("Api : batchstockout() : The operation to decrease stock was not successful. The error message is " . $data['returnMessage'], 'r');
+                        $this->message = $data['returnMessage'];
+                        $this->code = $data['returnCode'];
+                        
+                        $body = $this->code . ' : ' . $this->message;
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    } else {
+                        if ($data) {
+                            $this->message = '';
+                            $this->code = '';
+                            
+                            foreach($data as $elem){
+                                $this->message = $this->message . $elem['returnMessage'] . '; ';
+                                $this->code = $this->code . $elem['returnCode'] . '; ';
+                            }
+                        } else {
+                            $this->message = "The operation was successfully";
+                            $this->code = '00';
+                            
+                            
+                            foreach ($json['INVENTORIES'] as $obj){
+                                $this->util->logstockadjustment($this->userid_u, strtoupper(trim($obj['PRODUCTCODE'])), NULL, NULL, NULL, NULL, NULL, NULL, NULL, trim($this->appsettings['STOCKOUTOPERATIONTYPE']), $vchtype, $vchtypename, $vchnumber, $vchref, $adjustmenttype, $remarks);
+                            }
+                        }
+                        
+                    }
+                } else {
+                    $this->message = 'The voucher has already been uploaded into EFRIS';
+                    $this->code = '99';
+                }
+            } else if (trim($vchnumber) != '' && !empty($vchnumber)) {
+                $this->logger->write("Api : batchstockout() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+            
+            $activity = 'STOKOUT: ' . $vchnumber . ': ' . $vchref . ': ' . $this->message;
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+        }
+        
+        
+        
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array()
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+        
+    }
+    
+    /**
+     *	@name fetchproduct
+     *  @desc fetch a product
+     *	@return string response
+     *	@param NULL
+     **/
+    function fetchproduct(){
+        $operation = NULL; //tblevents
+        $permission = 'FETCHPRODUCT'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            $branch = new branches($this->db);
+            $branch->getByID($this->userbranch_u);
+                        
+            
+            $ProductCode = strtoupper(trim($json['PRODUCTCODE']));//KINOK-123
+            $ErpQty = trim($json['ERPQTY']);
+            //$this->logger->write("Api : fetchproduct() : The ERP quantity is: " . $ErpQty, 'r');
+            
+            //Handles cases where the ERP Qty is not availed.
+            $ErpQty = trim($ErpQty) == ''? '0' : $ErpQty;
+            
+            $this->logger->write("Api : fetchproduct() : The product code is " . $ProductCode, 'r');
+            
+            if(strtoupper(trim($ProductCode)) !== '' || !empty(strtoupper(trim($ProductCode)))) {
+                
+                $this->logger->write("Api : fetchproduct() : The userid is: " . $this->userid_u, 'r');
+                $this->logger->write("Api : fetchproduct() : Checking permissions", 'r');
+                if ($this->userpermissions[$permission]) {
+                    $product = array(
+                        'uraproductidentifier' => NULL,
+                        'erpid' => NULL,
+                        'erpcode' => strtoupper(trim($ProductCode)),
+                        'name' => NULL,
+                        'code' => strtoupper(trim($ProductCode)),
+                        'measureunit' => NULL,
+                        'unitprice' => 0,
+                        'currency' => NULL,
+                        'commoditycategorycode' => NULL,
+                        'hasexcisetax' => NULL,
+                        'description' => NULL,
+                        'stockprewarning' => NULL,
+                        'piecemeasureunit' => NULL,
+                        'havepieceunit' => NULL,
+                        'pieceunitprice' => NULL,
+                        'packagescaledvalue' => NULL,
+                        'piecescaledvalue' => NULL,
+                        'excisedutycode' => NULL,
+                        'uraquantity' => 0,
+                        'erpquantity' => 0,
+                        'purchaseprice' => 0,
+                        'stockintype' => NULL,
+                        'haveotherunit' => NULL,
+                        'isexempt' => NULL,
+                        'iszerorated' => NULL,
+                        'taxrate' => NULL,
+                        'statuscode' => NULL,
+                        'source' => NULL,
+                        'exclusion' => NULL,
+                        'serviceMark' => NULL,
+                        'hsCode' => NULL,
+                        'hsName' => NULL,
+                        'customsmeasureunit' => NULL,
+                        'customsunitprice' => NULL,
+                        'packagescaledvaluecustoms' => NULL,
+                        'customsscaledvalue' => NULL,
+                        'weight' => NULL,
+                        'exciseDutyCode' => NULL,
+                        'exciseDutyName' => NULL,
+                        'exciseRate' => NULL
+                    );
+                    
+                    $productid = '';
+                    $uraquantity =  0;
+                    $isexempt = '';
+                    $iszerorated = '';
+                    $taxrate = '';
+                    $statuscode = '';
+                    $source = '';
+                    $exclusion = '';
+                    $servicemark = '';
+                    
+                    
+                    //Fetch the details from EFRIS
+                    $this->logger->write("Api : fetchproduct() : Fetching product " . $product['code'], 'r');
+                    $n_data = $this->util->fetchproduct($this->userid_u, $product, $branch->uraid);//will return JSON.
+                    //var_dump($data);
+                    $n_data = json_decode($n_data, true);
+                    
+                    if(isset($n_data['records'])){
+                        $this->logger->write("Api : fetchproduct() : The fetch returned some records", 'r');
+                        if ($n_data['records']) {
+                            foreach($n_data['records'] as $elem){
+                                
+                                try{
+                                    $productid = $elem['id'];
+                                    $uraquantity =  $elem['stock'];
+                                    $isexempt = $elem['isExempt'];
+                                    $iszerorated = $elem['isZeroRate'];
+                                    $taxrate = $elem['taxRate'];
+                                    $statuscode = $elem['statusCode'];
+                                    $source = $elem['source'];
+                                    $exclusion = $elem['exclusion'];
+                                    $servicemark = $elem['serviceMark'];
+                                    
+                                    $product['name'] = $elem['goodsName'];
+                                    $product['measureunit'] = $elem['measureUnit'];
+                                    $product['unitprice'] = $elem['unitPrice'];
+                                    $product['currency'] = $elem['currency'];
+                                    $product['commoditycategorycode'] = $elem['commodityCategoryCode'];
+                                    $product['hasexcisetax'] = $elem['haveExciseTax'];
+                                    $product['stockprewarning'] = $elem['stockPrewarning'];
+                                    $product['havepieceunit'] = $elem['havePieceUnit'];
+                                    $product['haveotherunit'] = $elem['haveOtherUnit'];
+                                    
+                                    $product['isexempt'] = $elem['isExempt'];
+                                    $product['iszerorated'] = $elem['isZeroRate'];
+                                    $product['taxrate'] = $elem['taxRate'];
+                                    $product['statuscode'] = $elem['statusCode'];
+                                    $product['source'] = $elem['source'];
+                                    $product['exclusion'] = $elem['exclusion'];
+                                    $product['serviceMark'] = $elem['serviceMark'];
+                                    
+                                    /**
+                                     * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                     * Date: 2026-01-10
+                                     * Description: Add additional data points to the product upload operations.
+                                     */
+                                    $product['exciseDutyCode'] = $elem['exciseDutyCode'];
+                                    $product['exciseDutyName'] = $elem['exciseDutyName'];
+                                    $product['exciseRate'] = $elem['exciseRate'];
+                                    $product['pack'] = $elem['pack'];
+                                    $product['stick'] = $elem['stick'];
+                                    $product['goodsTypeCode'] = $elem['goodsTypeCode'];
+                                    $product['haveCustomsUnit'] = $elem['haveCustomsUnit'];
+                                    
+                                } catch (Exception $e) {
+                                    $this->logger->write("Api : fetchproduct() : The operation to fetch the product encountered an error. The error message is " . $e->getMessage(), 'r');
+                                }
+                            }
+                            
+                            //Add/update the product to eTW
+                            $product['uraproductidentifier'] = $productid;
+                            $product['uraquantity'] = $uraquantity;
+                            $product['erpquantity'] = $ErpQty;
+                            
+                            $this->logger->write("Api : fetchproduct() : The ERP quantity is: " . $product['erpquantity'], 'r');
+                            
+                            $pdct = new products($this->db);
+                            $pdct->getByErpCode(trim($product['code']));
+                            
+                            if ($pdct->dry()) {
+                                $this->logger->write("Api : fetchproduct() : The product " . $product['code'] . " does not exist on eTW", 'r');
+                                
+                                $product['description'] = "This product was created by the FTS api";
+                                $pdct_status = $this->util->createproduct($product, $this->userid_u);
+                                
+                            } else {
+                                $this->logger->write("Api : fetchproduct() : The product " . $product['code'] . " exists on eTW", 'r');
+                                
+                                $product['description'] = "This product was updated by the FTS api";
+                                $pdct_status = $this->util->updateproduct($product, $this->userid_u);
+                            }
+                            
+                            
+                            if ($pdct_status) {
+                                $this->logger->write("Api : fetchproduct() : The product " . $product['code'] . " was created/updated on eTW successfully", 'r');
+                            } else {
+                                $this->logger->write("Api : fetchproduct() : The product " . $product['code'] . " was NOT created/updated on eTW", 'r');
+                            }
+                            
+                            /**
+                             * Over-ride the stock quantity in case the query was made from a branch
+                             */
+                            
+                            $q_data = $this->util->stockquery($this->userid_u, $branch->uraid, strtoupper($ProductCode)); //will return JSON
+                            $q_data = json_decode($q_data, true);
+                            
+                            if (isset($q_data['stock'])){
+                                //$uraquantity = $q_data['stock'];
+                                $uraquantity = empty($q_data['stock'])? '0' : $q_data['stock'];
+                                //$stockPrewarning = $data['stockPrewarning'];
+                                $this->logger->write("Api : fetchproduct() : The operation to query branch specific stock was successful", 'r');
+                            } elseif (isset($q_data['returnCode'])){
+                                $this->logger->write("Api : fetchproduct() : The operation to query branch specific stock not successful. The error message is " . $q_data['returnMessage'], 'r');
+                                
+                                $body = $q_data['returnCode'] . ' : ' . $q_data['returnMessage'];
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                            } else {
+                                $this->logger->write("Api : fetchproduct() : The operation to query branch specific stock was not successful", 'r');
+                                
+                                $body = '99' . ' : ' . 'The operation to query the taxpayer was not successful';
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                            }
+                            
+                            $this->logger->write("Api : fetchproduct() : The product " . $product['code'] . " was fetched successfully", 'r');
+                            $this->message = 'The operation was successful';
+                            $this->code = '00';
+                            
+                        } else {
+                            $this->logger->write("Api : fetchproduct() : The fetch returned 0 records", 'r');
+                            $this->logger->write("Api : fetchproduct() : The fetch operation for product " . $product['code'] . " returned 0 records", 'r');
+                            $this->message = 'The operation to fetch the product didnt return anything. The TCS is offline OR you have not yet uploaded this product';
+                            $this->code = '999';
+                        }
+                        
+                        /*$this->logger->write("Api : fetchproduct() : The product " . $product['code'] . " was fetched successfully", 'r');
+                         $this->message = 'The operation was successful';
+                         $this->code = '00';*/
+                        
+                    } else {
+                        
+                        foreach($n_data as $elem){
+                            if(isset($elem['returnCode'])){
+                                $this->message = $elem['returnMessage'];
+                                $this->code = $elem['returnCode'];
+                                $this->logger->write("Api : fetchproduct() : The operation to fetch the product was not successful. The error message is " . $elem['returnMessage'], 'r');
+                                
+                                $body = $this->code . ' : ' . $this->message;
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                            } else {
+                                $this->logger->write("Api : fetchproduct() : The operation to fetch the product didnt return anything. The TCS is offline OR you have not yet uploaded this product", 'r');
+                                $this->message = "The operation to fetch the product didnt return anything. The TCS is offline OR you have not yet uploaded this product";
+                                $this->code = "999";
+                                
+                                $body = $this->code . ' : ' . $this->message;
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                            }
+                        }
+                        
+                        
+                    }
+                } else {
+                    $this->logger->write("Api : fetchproduct() : The user is not allowed to perform this function", 'r');
+                    $this->message = "The user is not allowed to perform this function";
+                    $this->code = '0099';
+                }
+                
+                
+                
+                
+                $activity = 'FETCHPRODUCT: ' . $ProductCode . ': ' . $this->message;
+                $windowsuser = trim($json['WINDOWSUSER']);
+                $ipaddress = trim($json['IPADDRESS']);
+                $macaddress = trim($json['MACADDRESS']);
+                $systemname = trim($json['SYSTEMNAME']);
+                $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            } else {
+                $this->logger->write("Api : fetchproduct() : The product code is empty", 'r');
+                $this->message = 'The product/service code is empty. Please configure.';
+                $this->code = '99';
+            }   
+        }
+        
+        
+        
+        
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array(
+                "ISTAXEXEMPT" => $this->util->decodechoicecode($isexempt),
+                "ISZERORATED" => $this->util->decodechoicecode($iszerorated),
+                "TAXRATE" => strval($taxrate),
+                "STATUS" => $this->util->decodeproductstatuscode($statuscode),
+                "SOURCE" => $this->util->decodeproductsourcecode($source),
+                "EXCLUSION" => $this->util->decodeproductexclusioncode($exclusion),
+                "PRODID" => strval($productid),
+                "SERVICEMARK" => $this->util->decodechoicecode($servicemark),
+                "URAQTY" => strval($uraquantity)
+            )
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+        
+    }
+    
+    /**
+     *	@name syncproducts
+     *  @desc synchronize products
+     *	@return string response
+     *	@param NULL
+     **/
+    function syncproducts(){
+        $operation = NULL; //tblevents
+        $permission = 'SYNCPRODUCTS'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+               
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            $branch = new branches($this->db);
+            $branch->getByID($this->userbranch_u);
+            
+            $this->logger->write("Api : syncproducts() : The userid is: " . $this->userid_u, 'r');
+            $this->logger->write("Api : syncproducts() : Checking permissions", 'r');
+            if ($this->userpermissions[$permission]) {
+                $pdct = new products($this->db);
+                $products = array();
+                $tempProduct = array();
+                $product = array(
+                    'uraproductidentifier' => NULL,
+                    'erpid' => NULL,
+                    'erpcode' => NULL,
+                    'name' => NULL,
+                    'code' => NULL,
+                    'measureunit' => NULL,
+                    'unitprice' => 0,
+                    'currency' => NULL,
+                    'commoditycategorycode' => NULL,
+                    'hasexcisetax' => NULL,
+                    'description' => NULL,
+                    'stockprewarning' => NULL,
+                    'piecemeasureunit' => NULL,
+                    'havepieceunit' => NULL,
+                    'pieceunitprice' => NULL,
+                    'packagescaledvalue' => NULL,
+                    'piecescaledvalue' => NULL,
+                    'excisedutycode' => NULL,
+                    'uraquantity' => 0,
+                    'erpquantity' => 0,
+                    'purchaseprice' => 0,
+                    'stockintype' => NULL,
+                    'haveotherunit' => NULL,
+                    'isexempt' => NULL,
+                    'iszerorated' => NULL,
+                    'taxrate' => NULL,
+                    'statuscode' => NULL,
+                    'source' => NULL,
+                    'exclusion' => NULL,
+                    'serviceMark' => NULL
+                );
+                
+                $pageNo = 1;
+                $pageSize = 90;
+                $pageCount = 1;
+                
+                
+                do {
+                    $this->logger->write("Api : syncproducts() : pageNo = " . $pageNo, 'r');
+                    $this->logger->write("Api : syncproducts() : pageCount = " . $pageCount, 'r');
+                    
+                    $data = $this->util->syncproducts($this->userid_u, $pageNo, $pageSize);//will return JSON.
+                    //var_dump($data);
+                    $data = json_decode($data, true);
+                    
+                    if(isset($data['page'])){
+                        $pageCount = $data['page']['pageCount'];
+                        
+                        if ($pageNo < $pageCount) {
+                            $pageNo = $pageNo + 1;
+                        }
+                    }
+                    
+                    
+                    if(isset($data['records'])){
+                        
+                        if ($data['records']) {
+                            foreach($data['records'] as $elem){
+                                
+                                try{
+                                    
+                                    
+                                    $tempProduct['ISTAXEXEMPT'] = $this->util->decodechoicecode($elem['isExempt']);
+                                    $tempProduct['ISZERORATED'] = $this->util->decodechoicecode($elem['isZeroRate']);
+                                    $tempProduct['TAXRATE'] = $elem['taxRate'];
+                                    $tempProduct['STATUS'] = $this->util->decodeproductstatuscode($elem['statusCode']);
+                                    $tempProduct['SOURCE'] = $this->util->decodeproductsourcecode($elem['source']);
+                                    $tempProduct['EXCLUSION'] = $this->util->decodeproductexclusioncode($elem['exclusion']);
+                                    $tempProduct['PRODID'] = $elem['id'];
+                                    $tempProduct['SERVICEMARK'] = $this->util->decodechoicecode($elem['serviceMark']);
+                                    $tempProduct['URAQTY'] = $elem['stock'];
+                                    
+                                    $products[] = $tempProduct;
+                                    
+                                    $product['code'] = $elem['goodsCode'];
+                                    $product['erpcode'] = $elem['goodsCode'];
+                                    $product['name'] = $elem['goodsName'];
+                                    $product['measureunit'] = $elem['measureUnit'];
+                                    $product['unitprice'] = $elem['unitPrice'];
+                                    $product['currency'] = $elem['currency'];
+                                    $product['commoditycategorycode'] = $elem['commodityCategoryCode'];
+                                    $product['hasexcisetax'] = $elem['haveExciseTax'];
+                                    $product['stockprewarning'] = $elem['stockPrewarning'];
+                                    $product['havepieceunit'] = $elem['havePieceUnit'];
+                                    $product['haveotherunit'] = $elem['haveOtherUnit'];
+                                    
+                                    $product['isexempt'] = $elem['isExempt'];
+                                    $product['iszerorated'] = $elem['isZeroRate'];
+                                    $product['taxrate'] = $elem['taxRate'];
+                                    $product['statuscode'] = $elem['statusCode'];
+                                    $product['source'] = $elem['source'];
+                                    $product['exclusion'] = $elem['exclusion'];
+                                    $product['serviceMark'] = $elem['serviceMark'];
+                                    
+                                    
+                                    $product['uraproductidentifier'] = $elem['id'];
+                                    $product['uraquantity'] = $elem['stock'];
+                                    $product['erpquantity'] = 0;
+                                    
+                                    
+                                    $pdct->getByErpCode(trim($product['code']));
+                                    
+                                    if ($pdct->dry()) {
+                                        $this->logger->write("Api : syncproducts() : The product " . $product['code'] . " does not exist on eTW", 'r');
+                                        
+                                        $product['description'] = "This product was created by the FTS api";
+                                        $pdct_status = $this->util->createproduct($product, $this->userid_u);
+                                        
+                                    } else {
+                                        $this->logger->write("Api : syncproducts() : The product " . $product['code'] . " exists on eTW", 'r');
+                                        
+                                        $product['description'] = "This product was updated by the FTS api";
+                                        $pdct_status = $this->util->updateproduct($product, $this->userid_u);
+                                    }
+                                    
+                                    if ($pdct_status) {
+                                        $this->logger->write("Api : syncproducts() : The product " . $product['code'] . " was created/updated on eTW successfully", 'r');
+                                    } else {
+                                        $this->logger->write("Api : syncproducts() : The product " . $product['code'] . " was NOT created/updated on eTW", 'r');
+                                    }
+                                    
+                                    
+                                } catch (Exception $e) {
+                                    $this->logger->write("Api : syncproducts() : The operation to sync the products was not successful. The error message is " . $e->getMessage(), 'r');
+                                }
+                            }
+                            
+                            $this->logger->write("Api : syncproducts() : The products were sync'd successfully", 'r');
+                            $this->message = 'The operation was successful';
+                            $this->code = '00';
+                        } else {                            
+                            $this->logger->write("Api : syncproducts() : The sync returned 0 records", 'r');
+                            $this->logger->write("Api : syncproducts() : The sync operation returned 0 records", 'r');
+                            $this->message = 'The operation to sync products didnt return anything. You have not yet uploaded products';
+                            $this->code = '999';
+                        }
+                        
+                        
+                    } elseif (isset($data['returnCode'])){
+                        $this->message = $elem['returnMessage'];
+                        $this->code = $elem['returnCode'];
+                        $this->logger->write("Api : syncproducts() : The operation to sync products was not successful. The error message is " . $elem['returnMessage'], 'r');
+                        
+                        $body = $this->code . ' : ' . $this->message;
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    } else {
+                        $this->logger->write("Api : syncproducts() : The operation to sync products didnt return anything. The TCS is offline OR you have not yet uploaded products", 'r');
+                        $this->message = "The operation to sync products didnt return anything. The TCS is offline OR you have not yet uploaded products";
+                        $this->code = "999";
+                        
+                        $body = $this->code . ' : ' . $this->message;
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    }
+                } while ($pageNo < $pageCount);
+                
+            } else {
+                $this->logger->write("Api : syncproducts() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+            
+
+            $activity = 'syncproducts: ' . $this->message;
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+        }
+        
+        
+        
+        
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => $products
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+        
+    }
+    
+    
+    /**
+     *	@name uploadproduct
+     *  @desc upload product
+     *	@return string response
+     *	@param NULL
+     **/
+    function uploadproduct(){
+        $operation = NULL; //tblevents
+        $permission = 'UPLOADPRODUCT'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            
+            /**
+             *
+             * Steps to follow when uploading to EFRIS
+             * 0. Grab the json body from the ERP
+             * 1. Check permissions of the api key
+             * 2. Populate the mandatory fields
+             * 3. Call the EFRIS interface
+             * 4. Receive feedback from EFRIS
+             * 5. If it is a success, populate eTW product tables
+             * 6. Transmit the same to the ERP & make necessary updates
+             */
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            $ProductName = $json['ITEMNAME'];//Nails 12-Inch
+            $ProductId = $json['ITEMID'];//
+            $ProductMeasureUnits = $json['MEASUREUNITS'];//Kgs, Pcs, etc.
+            /*
+             * Date: 2021-01-10
+             * Author: Francis Lubanga
+             * Description: Pause the sending of alternative measure units. They have a dependency on piece units
+             */
+            //$ProductAltMeasureUnits = $xml->ALTMEASUREUNITS;//Kgs, Pcs, etc.
+            $ProductAltMeasureUnits = NULL;
+            $ProductCommodityCode = $json['COMMODITYCODE'];//Corrugated steel sheet
+            $ProductCode = strtoupper($json['PRODUCTCODE']);//KINOK-123
+            $ProductCurrency = $json['CURRENCY'];//UGX
+            $ProductHasExciseDuty = $json['HASEXCISEDUTYFLAG'];//No,Yes
+            $ProductExciseDutyCode = $json['EXCISEDUTYCODE'];
+            $ProductHavePieceUnits = $json['HAVEPIECEUNITSFLAG'];//No,Yes
+            $ProductPieceUnitsMeasureUnit = $json['PIECEUNITSMEASUREUNIT'];//Kgs, Pcs, etc.
+            $ProductPieceUnitPrice = $json['PIECEUNITPRICE'];
+            $ProductPackageScaleValue = $json['PACKAGESCALEVALUE'];
+            $ProductPieceScaleValue = $json['PIECESCALEVALUE'];
+            $ProductStockPrewarning = $json['STOCKPREWARNING'];
+            $unitPrice = $json['UNITPRICE'];
+            $TaxCode = $json['TAXCODE'];
+            
+            /**
+             * Author: Francis Lubanga <francis.lubanga@gmail.com>
+             * Date: 2026-01-10
+             * Description: Add additional data points to the product upload operations.
+             */
+            $ProductHsCode = $json['HSCODE'];
+            $ProductCustomMeasureUnit = $json['CUSTOMMEASUREUNIT'];
+            $ProductCustomUnitPrice = $json['CUSTOMUNITPRICE'];
+            $ProductCustomPackageScaledValue = $json['CUSTOMPACKAGESCALEDVALUE'];
+            $ProductCustomScaledValue = $json['CUSTOMSCALEDVALUE'];
+            $ProductCustomWeight = $json['CUSTOMWEIGHT'];
+            
+            $this->logger->write("Api : uploadproduct() : The commodity code is " . $ProductCommodityCode, 'r');
+            $this->logger->write("Api : uploadproduct() : The product code is " . $ProductCode, 'r');
+            $this->logger->write("Api : uploadproduct() : The sales tax code is " . $TaxCode, 'r');
+            
+            if (trim($TaxCode) == '' || empty($TaxCode)) {
+                $this->logger->write("Api : uploadproduct() : The PRODUCTCODE " . $ProductCode . " does not have a TAXCODE", 'r');
+                $this->message = "The PRODUCTCODE " . $ProductCode . " does not have a TAXCODE!";
+                $this->code = '2398';
+                //break;//exit loop
+                
+                //return to the client                
+                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a product failed with the following details;</p>
+                                                <p>Product Code: <b>' . $ProductCode . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                
+                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                
+                
+                $this->response = array(
+                    "response" => array(
+                        "responseCode" => $this->code,
+                        "responseMessage" => $this->message
+                    ),
+                    "data" => array(
+                        "ISTAXEXEMPT" => "",
+                        "ISZERORATED" => "",
+                        "TAXRATE" => "",
+                        "STATUS" => "",
+                        "SOURCE" => "",
+                        "EXCLUSION" => "",
+                        "PRODID" => "",
+                        "SERVICEMARK" => ""
+                    )
+                );
+                
+                $len = sizeof($this->response);
+                header ("CONTENT-LENGTH:".$len);
+                //print $this->response;
+                die(json_encode($this->response));
+                return;                
+            }
+            
+            
+            $this->logger->write("Api : uploadproduct() : The userid is: " . $this->userid_u, 'r');
+            $this->logger->write("Api : uploadproduct() : Checking permissions", 'r');
+            if ($this->userpermissions[$permission]) {
+                
+                if (empty(trim($ProductMeasureUnits))) {
+                    $ProductMeasureUnits = 'UN';
+                }
+                
+                $altunits = array();
+                
+                $product = array(
+                    'uraproductidentifier' => NULL,
+                    'erpid' => trim($ProductId),
+                    'erpcode' => strtoupper(trim($ProductCode)),
+                    'name' => trim($ProductName),
+                    'code' => strtoupper(trim($ProductCode)),
+                    'measureunit' => $this->util->mapmeasureunit($ProductMeasureUnits),
+                    'unitprice' => empty(trim($unitPrice))? '1' : trim($unitPrice),
+                    'currency' => $this->util->mapcurrency($ProductCurrency),
+                    'commoditycategorycode' => trim($ProductCommodityCode),
+                    'hasexcisetax' => strtoupper(trim($ProductHasExciseDuty)) == 'NO' || empty(trim($ProductHasExciseDuty)) || trim($ProductHasExciseDuty) == ''? '102' : '101',
+                    'description' => NULL,
+                    'stockprewarning' => (int)$ProductStockPrewarning,
+                    'piecemeasureunit' => $this->util->mapmeasureunit($ProductPieceUnitsMeasureUnit),
+                    'havepieceunit' => strtoupper(trim($ProductHavePieceUnits)) == 'NO' || empty(trim($ProductHavePieceUnits)) || trim($ProductHavePieceUnits) == ''? '102' : '101',
+                    'pieceunitprice' => empty(trim($ProductPieceUnitPrice))? '' : (float)trim($ProductPieceUnitPrice),
+                    'packagescaledvalue' => empty(trim($ProductPackageScaleValue))? '' : trim($ProductPackageScaleValue),
+                    'piecescaledvalue' => empty(trim($ProductPieceScaleValue))? '' : trim($ProductPieceScaleValue),
+                    'excisedutylist' => NULL,
+                    'uraquantity' => 0,
+                    'erpquantity' => 0,
+                    'purchaseprice' => 0,
+                    'stockintype' => NULL,
+                    'haveotherunit' => empty(trim($ProductAltMeasureUnits))? '102' : '101',
+                    'isexempt' => NULL,
+                    'iszerorated' => NULL,
+                    'taxrate' => NULL,
+                    'statuscode' => NULL,
+                    'source' => NULL,
+                    'exclusion' => NULL,
+                    'serviceMark' => NULL,
+                    'hsCode' => $this->util->maphscode($ProductHsCode),
+                    'hsName' => NULL,
+                    'customsmeasureunit' => $this->util->mapmeasureunit($ProductCustomMeasureUnit),
+                    'customsunitprice' => empty(trim($ProductCustomUnitPrice))? '' : (float)trim($ProductCustomUnitPrice),
+                    'packagescaledvaluecustoms' => empty(trim($ProductCustomPackageScaledValue))? '' : trim($ProductCustomPackageScaledValue),
+                    'customsscaledvalue' => empty(trim($ProductCustomScaledValue))? '' : trim($ProductCustomScaledValue),
+                    'weight' => empty(trim($ProductCustomWeight))? '' : (int)trim($ProductCustomWeight),
+                    'exciseDutyCode' => $this->util->mapexciseduty(trim($ProductExciseDutyCode)),
+                    'exciseDutyName' => NULL,
+                    'exciseRate' => NULL
+                );
+                
+                if (!empty(trim($ProductAltMeasureUnits))) {
+                    $this->logger->write("Api : uploadproduct() : The product " . $product['code'] . " has an alternative measure unit", 'r');
+                    $altunits[] = array(
+                        'otherunit' => $this->util->mapmeasureunit($ProductAltMeasureUnits),
+                        'otherPrice' => 1,
+                        'otherscaled' => 1,
+                        'packagescaled' => 1
+                    );
+                } else {
+                    $this->logger->write("Api : uploadproduct() : The product " . $product['code'] . " does not have an alternative measure unit", 'r');
+                }
+                
+                $branch = new branches($this->db);
+                $branch->getByID($this->userbranch_u);
+                
+                $productid = '';
+                $isexempt = '';
+                $iszerorated = '';
+                $taxrate = '';
+                $statuscode = '';
+                $source = '';
+                $exclusion = '';
+                $servicemark = '';
+                
+                $this->logger->write("Api : uploadproduct() : Uploading product " . $product['code'], 'r');
+                $data = $this->util->uploadproduct($this->userid_u, $product, $altunits);//will return JSON.
+                
+                $data = json_decode($data, true);
+                //var_dump($data);
+                
+                if (empty($data)) {
+                    //Fetch the details from EFRIS
+                    $this->logger->write("Api : uploadproduct() : Fetching product " . $product['code'], 'r');
+                    $n_data = $this->util->fetchproduct($this->userid_u, $product, $branch->uraid);//will return JSON.
+                    //var_dump($data);
+                    $n_data = json_decode($n_data, true);
+                    
+                    if(isset($n_data['records'])){
+                        $this->logger->write("Api : uploadproduct() : The fetch returned some records", 'r');
+                        if ($n_data['records']) {
+                            foreach($n_data['records'] as $elem){
+                                
+                                try{
+                                    $productid = $elem['id'];
+                                    $isexempt = $elem['isExempt'];
+                                    $iszerorated = $elem['isZeroRate'];
+                                    $taxrate = $elem['taxRate'];
+                                    $statuscode = $elem['statusCode'];
+                                    $source = $elem['source'];
+                                    $exclusion = $elem['exclusion'];
+                                    $servicemark = $elem['serviceMark'];
+                                    
+                                    $product['uraproductidentifier'] = $elem['id'];
+                                    $product['uraquantity'] = $elem['stock'];
+                                    $product['name'] = $elem['goodsName'];
+                                    $product['measureunit'] = $elem['measureUnit'];
+                                    $product['unitprice'] = $elem['unitPrice'];
+                                    $product['currency'] = $elem['currency'];
+                                    $product['commoditycategorycode'] = $elem['commodityCategoryCode'];
+                                    $product['hasexcisetax'] = $elem['haveExciseTax'];
+                                    $product['stockprewarning'] = $elem['stockPrewarning'];
+                                    $product['havepieceunit'] = $elem['havePieceUnit'];
+                                    $product['haveotherunit'] = $elem['haveOtherUnit'];
+                                    
+                                    $product['isexempt'] = $elem['isExempt'];
+                                    $product['iszerorated'] = $elem['isZeroRate'];
+                                    $product['taxrate'] = $elem['taxRate'];
+                                    $product['statuscode'] = $elem['statusCode'];
+                                    $product['source'] = $elem['source'];
+                                    $product['exclusion'] = $elem['exclusion'];
+                                    
+                                    $product['serviceMark'] = $elem['serviceMark'];
+                                    
+                                    /**
+                                     * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                     * Date: 2026-01-10
+                                     * Description: Add additional data points to the product upload operations.
+                                     */
+                                    $product['exciseDutyCode'] = $elem['exciseDutyCode'];
+                                    $product['exciseDutyName'] = $elem['exciseDutyName'];
+                                    $product['exciseRate'] = $elem['exciseRate'];
+                                    $product['pack'] = $elem['pack'];
+                                    $product['stick'] = $elem['stick'];
+                                    $product['goodsTypeCode'] = $elem['goodsTypeCode'];
+                                    $product['haveCustomsUnit'] = $elem['haveCustomsUnit'];
+                                    
+                                    $this->logger->write("Api : uploadproduct() : Product Code - " . $product['code'] . " - was fetched & attributes updated successfully by " . $this->username, 'r');
+                                } catch (Exception $e) {
+                                    $this->logger->write("Api : uploadproduct() : The operation to fetch the product was not successful. The error message is " . $e->getMessage(), 'r');
+                                }
+                            }
+                            
+                        } else {
+                            $this->logger->write("Api : uploadproduct() : The operation to fetch the product " . $product['code'] . " returned 0 records", 'r');
+                        }
+                        
+                        $this->logger->write("Api : uploadproduct() : The product " . $product['code'] . " was uploaded/updated successfully", 'r');
+                        $this->message = "The product was uploaded/updated successfully";
+                        $this->code = '00';
+                        
+                        //Add/update the product to eTW
+                        $pdct = new products($this->db);
+                        $pdct->getByErpCode(trim($product['code']));
+                        
+                        if ($pdct->dry()) {
+                            $this->logger->write("Api : uploadproduct() : The product " . $product['code'] . " does not exist on eTW", 'r');
+                            
+                            $product['description'] = "This product was created by the FTS api";
+                            $pdct_status = $this->util->createproduct($product, $this->userid_u);
+                            
+                        } else {
+                            $this->logger->write("Api : uploadproduct() : The product " . $product['code'] . " exists on eTW", 'r');
+                            
+                            $product['description'] = "This product was updated by the FTS api";
+                            $pdct_status = $this->util->updateproduct($product, $this->userid_u);
+                        }
+                        
+                        
+                        if ($pdct_status) {
+                            $this->logger->write("Api : uploadproduct() : The product " . $product['code'] . " was created/updated on eTW successfully", 'r');
+                            
+                        } else {
+                            $this->logger->write("Api : uploadproduct() : The product " . $product['code'] . " was NOT created/updated on eTW", 'r');
+                        }
+                    } else {
+                        $this->logger->write("Api : uploadproduct() : The product " . $product['code'] . " was not uploaded successfully", 'r');
+                        //var_dump($n_data);
+                        $this->message = $n_data['returnMessage'];
+                        $this->code = $n_data['returnCode'];
+                        
+                        $body = $this->code . ' : ' . $this->message;
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    }
+                    
+                } else {
+                    $this->logger->write("Api : uploadproduct() : The product " . $product['code'] . " was not uploaded successfully", 'r');
+                    
+                    //$body = $this->code . ' : ' . $this->message;
+                    //$this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    
+                    foreach($data as $elem){
+                        if(isset($elem['returnCode'])){
+                            $this->message = $elem['returnMessage'];
+                            $this->code = $elem['returnCode'];
+                            
+                            /**
+                             * Handle response code 602: Goods Code already exists && the product is not on the eTW database
+                             * 1. Check if the product is on eTW
+                             * 2. If the product is on eTW, then ignore
+                             * 3. If the product is NOT on eTW, call the create product API
+                             */
+                            
+                            if (trim($elem['returnCode']) == '602') {
+                                $pdct = new products($this->db);
+                                $pdct->getByErpCode(trim($product['code']));
+                                
+                                if ($pdct->dry()) {
+                                    $this->logger->write("Api : uploadproduct() : The product " . $product['code'] . " does not exist on eTW", 'r');
+                                    
+                                    $pdct_status = $this->util->createproduct($product, $this->userid_u);
+                                    
+                                    if ($pdct_status) {
+                                        $this->logger->write("Api : uploadproduct() : The product " . $product['code'] . " was created on eTW successfully", 'r');
+                                        
+                                        /**
+                                         * Populate API response data here?
+                                         */
+                                        
+                                        $productid = $elem['id'];
+                                        $isexempt = '';
+                                        $iszerorated = '';
+                                        $taxrate = '';
+                                        $statuscode = '';
+                                        $source = '';
+                                        $exclusion = '';
+                                        $servicemark = '';
+                                    } else {
+                                        $this->logger->write("Api : uploadproduct() : The product " . $product['code'] . " was NOT created on eTW", 'r');
+                                    }
+                                    
+                                    
+                                    
+                                } else {
+                                    $this->logger->write("Api : uploadproduct() : The product " . $product['code'] . " exists on eTW", 'r');
+                                }
+                            }
+                                                        
+                            $body = $this->code . ' : ' . $this->message;
+                            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                        }
+                    }
+                }
+            } else {
+                $this->logger->write("Api : uploadproduct() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+            
+            
+            
+            
+            
+            //$productid = '0091862';
+            
+            
+            $activity = 'UPLOADPRODUCT: ' . $ProductCode . ': ' . $this->message;
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+        }
+        
+        
+        
+        // prepare json response                
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array(
+                "ISTAXEXEMPT" => $this->util->decodechoicecode($isexempt),
+                "ISZERORATED" => $this->util->decodechoicecode($iszerorated),
+                "TAXRATE" => strval($taxrate),
+                "STATUS" => $this->util->decodeproductstatuscode($statuscode),
+                "SOURCE" => $this->util->decodeproductsourcecode($source),
+                "EXCLUSION" => $this->util->decodeproductexclusioncode($exclusion),
+                "PRODID" => strval($productid),
+                "SERVICEMARK" => $this->util->decodechoicecode($servicemark)
+            )
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+    }
+ 
+ 
+    /**
+     *	@name stocktransfer
+     *  @desc validate a TIN number
+     *	@return string response
+     *	@param NULL
+     **/
+    function stocktransfer(){
+        $operation = NULL; //tblevents
+        $permission = 'TRANSFERPRODUCTSTOCK'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            $ProductCode = strtoupper(trim($json['PRODUCTCODE']));//KINOK-123
+            $sourcebranch = trim($json['SOURCEBRANCH']);
+            $destbranch = trim($json['DESTBRANCH']);
+            $qty = trim($json['QTY']);
+            $remarks = trim($json['REMARKS']);
+            
+            $this->logger->write("Api : stocktransfer() : The userid is: " . $this->userid_u, 'r');
+            
+            $this->logger->write("Api : stocktransfer() : Checking permissions", 'r');
+            if ($this->userpermissions[$permission]) {
+                
+                $pdct = new products($this->db);
+                $pdct->getByErpCode(strtoupper(trim($ProductCode)));
+
+                $mappedSourceBranch = $this->util->mapbranchcode($sourcebranch);
+                $sourcebranch = (trim((string)$mappedSourceBranch) != '') ? $mappedSourceBranch : $sourcebranch;
+
+                $mappedDestBranch = $this->util->mapbranchcode($destbranch);
+                $destbranch = (trim((string)$mappedDestBranch) != '') ? $mappedDestBranch : $destbranch;
+
+                $resolvedProductCode = !$pdct->dry() && trim($pdct['code']) != '' ? strtoupper(trim($pdct['code'])) : strtoupper(trim($ProductCode));
+                
+                $product = array(
+                    'uraproductidentifier' => $pdct['uraproductidentifier'],
+                    'name' => $pdct['name'],
+                    'code' => $resolvedProductCode,
+                    'measureunit' => $pdct['measureunit']
+                );
+                
+                $data = $this->util->transferproductstock($this->userid_u, $product, $sourcebranch, $destbranch, $qty, $remarks);//will return JSON.
+                $data = json_decode($data, true);
+                
+                if(isset($data['returnCode'])){
+                    $this->logger->write("Api : stocktransfer() : The operation to transfer stock was not successful. The error message is " . $data['returnMessage'], 'r');
+                    $this->message = $data['returnMessage'];
+                    $this->code = $data['returnCode'];
+                    
+                    $body = $this->code . ' : ' . $this->message;
+                    $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                } else {
+                    if ($data) {
+                        foreach($data as $elem){
+                            $this->message = $elem['returnMessage'];
+                            $this->code = $elem['returnCode'];
+                        }
+                    } else {
+                        $this->message = "The operation was successfully";
+                        $this->code = '00';
+                        $this->util->logstocktransfer($this->userid_u, $resolvedProductCode, $qty, NULL, NULL, NULL, NULL, $remarks, $sourcebranch, $destbranch, '101', $pdct['uraproductidentifier']);
+                    }
+                    
+                }
+                
+            } else {
+                $this->logger->write("Api : stocktransfer() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+                      
+            $activity = 'TRANSFERPRODUCTSTOCK: ' . strtoupper($ProductCode) . ': ' . $this->message;
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+        }
+        
+        
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array()
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+        
+    }
+    
+    
+    /**
+     *	@name uploadinvoice
+     *  @desc upload invoice
+     *	@return string response
+     *	@param NULL
+     **/
+    function uploadinvoice(){
+        $operation = NULL; //tblevents
+        $permission = 'UPLOADINVOICE'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            $invoiceid = '';
+            $invoicenumber = '';
+            $issueddate = '';
+            $fdn = '';
+            $qr = '';
+            
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            
+            /**
+             *
+             * Steps to follow when uploading to EFRIS
+             * 0. Grab the json body from the ERP
+             * 1. Generate a groupid for the following;
+             * 1.1 Goods
+             * 1.2 Taxes
+             * 1.3 Payments
+             * 2. Create the following arrays
+             * 2.1 buyer
+             * 2.2 invoicedetails
+             * 2.3 goods
+             * 2.4 payments
+             * 2.5 taxes
+             * 3. Send the items in [1] to the uploadinvoice API
+             */
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            
+            $tcsdetails = new tcsdetails($this->db);
+            $tcsdetails->getByID($this->appsettings['EFRIS_TCS_RECORD_ID']);
+            
+            $companydetails = new organisations($this->db);
+            $companydetails->getByID($this->appsettings['SELLER_RECORD_ID']);
+            
+            $devicedetails = new devices($this->db);
+            $devicedetails->getByID($this->appsettings['EFRIS_DEVICE_RECORD_ID']);
+            
+            $vchtype = trim($json['VOUCHERTYPE']);
+            $vchtypename = trim($json['VOUCHERTYPENAME']);
+            $vchnumber = trim($json['VOUCHERNUMBER']);
+            
+            $vchref = trim($json['VOUCHERREF']);//Optional
+            
+            $this->logger->write("Api : uploadinvoice() : The userid is: " . $this->userid_u, 'r');
+            $this->logger->write("Api : uploadinvoice() : Checking permissions", 'r');
+            if ($this->userpermissions[$permission]) {
+                $branch = new branches($this->db);
+                $branch->getByID($this->userbranch_u);
+                
+                $inv_check = new DB\SQL\Mapper($this->db, 'tblinvoices');
+                $inv_check->load(array('TRIM(erpinvoiceid)=?', $vchnumber));
+                $this->logger->write($this->db->log(TRUE), 'r');
+                
+                
+                if($inv_check->dry ()){
+                    $this->logger->write("Api : uploadinvoice() : The invoice does not exist on e-TW. Proceed and upload", 'r');
+                    
+                    
+                    $invoicedetails = array(
+                        'gooddetailgroupid' => NULL,
+                        'taxdetailgroupid' => NULL,
+                        'paymentdetailgroupid' => NULL,
+                        'erpinvoiceid' => $vchnumber,
+                        'erpinvoiceno' => $vchref,
+                        'antifakecode' => NULL,
+                        'deviceno' => trim($devicedetails->deviceno),
+                        'issueddate' => NULL,
+                        'issuedtime' => NULL,
+                        'operator' => trim($json['ERPUSER']),
+                        'currency' => $this->util->getcurrency(trim($json['CURRENCY'])),
+                        'oriinvoiceid' => NULL,
+                        'invoicetype' => "1",
+                        'invoicekind' => ($this->vatRegistered == 'Y')? "1" : "2",
+                        'datasource' => $this->appsettings['WESERVICEDS'],
+                        'invoiceindustrycode' => trim($json['INDUSTRYCODE'])? trim($json['INDUSTRYCODE']) : "101",
+                        'einvoiceid' => NULL,
+                        'einvoicenumber' => NULL,
+                        'einvoicedatamatrixcode' => NULL,
+                        'isbatch' => '0',
+                        'netamount' => NULL,
+                        'taxamount' => NULL,
+                        'grossamount' => NULL,
+                        'origrossamount' => NULL,
+                        'itemcount' => NULL,
+                        'modecode' => NULL,
+                        'modename' => NULL,
+                        'remarks' => trim($json['REMARKS']),
+                        'buyerid' => NULL,
+                        'sellerid' => $this->appsettings['SELLER_RECORD_ID'],
+                        'issueddatepdf' => NULL,
+                        'grossamountword' => NULL,
+                        'isinvalid' => 0,
+                        'isrefund' => 0,
+                        'vchtype' => $vchtype,
+                        'vchtypename' => $vchtypename,
+                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                        'vatProjectId' => trim($json['PROJECTID']),
+                        'vatProjectName' => trim($json['PROJECTNAME']),
+                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE']))
+                    );
+                    
+                    $buyer = array(
+                        'tin' => trim($json['BUYERTIN']),
+                        'ninbrn' => trim($json['BUYERNINBRN']),
+                        'PassportNum' => trim($json['BUYERPASSPORTNUM']),
+                        'legalname' => trim($json['BUYERLEGALNAME']),
+                        'businessname' => trim($json['BUSINESSNAME']),
+                        'address' => trim($json['BUYERADDRESS']),
+                        'mobilephone' => trim($json['MOBILEPHONE']),
+                        'linephone' => trim($json['BUYERLINEPHONE']),
+                        'emailaddress' => trim($json['BUYEREMAIL']),
+                        'placeofbusiness' => trim($json['BUYERPLACEOFBUSI']),
+                        'type' => $this->util->mapbuyertypecode(trim($json['BUYERTYPE'])),
+                        'citizineship' => trim($json['BUYERCITIZENSHIP']),
+                        'sector' => trim($json['BUYERSECTOR']),
+                        'referenceno' => trim($json['BUYERREFERENCENO']),
+                        'datasource' => $this->appsettings['WESERVICEDS'],
+                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                        'vatProjectId' => trim($json['PROJECTID']),
+                        'vatProjectName' => trim($json['PROJECTNAME']),
+                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE']))
+                    );
+                    
+                    
+                    /**
+                     * @desc Validate TIN number, if supplied.
+                     * @author francis.lubanga@gmail.com
+                     * @date 2022-06-16
+                     *
+                     */
+                    
+                    if (trim($json['BUYERTIN']) == '' || empty($json['BUYERTIN'])) {
+                        $this->logger->write("Api : uploadinvoice() : The buyer TIN was not provided!", 'r');
+                        
+                    } else {
+                        $v_data = $this->util->querytaxpayer($this->userid_u, trim($json['BUYERTIN']));//will return JSON.
+                        $v_data = json_decode($v_data, true);
+                        
+                        if (isset($v_data['taxpayer'])){
+                            $this->logger->write("Api : uploadinvoice() : The buyer TIN was validated successfully!", 'r');
+                            
+                            $buyer['ninbrn'] = $v_data['taxpayer']['ninBrn'];
+                            $buyer['legalname'] = $v_data['taxpayer']['legalName'];
+                            $buyer['businessname'] = $v_data['taxpayer']['businessName'];
+                            $buyer['mobilephone'] = $v_data['taxpayer']['contactNumber'];
+                            $buyer['emailaddress'] = $v_data['taxpayer']['contactEmail'];
+                            $buyer['address'] = $v_data['taxpayer']['address'];
+                            
+                        } 
+                    }
+                    
+                    $goods = array();
+                    $taxes = array();
+                    $payments = array();
+                    
+                    $deemedflag = 'NO';
+                    $discountflag = 'NO';
+                    
+                    $pricevatinclusive = empty(trim($json['PRICEVATINCLUSIVE']))? 'NO' : strtoupper(trim($json['PRICEVATINCLUSIVE']));//No
+                    
+                    $netamount = 0;
+                    $taxamount = 0;
+                    $grossamount = 0;
+                    $itemcount = 0;
+                    
+                    $tr = new taxrates($this->db);
+                    $taxid = NULL;
+                    $taxcode = NULL;
+                    $taxname = NULL;
+                    $taxcategory = NULL;
+                    $taxdisplaycategory = NULL;
+                    $taxdescription = NULL;
+                    $rate = 0;
+                    $qty = 0;
+                    $unit = 0;
+                    $discountpct = 0;
+                    $total = 0;
+                    $discount = 0;
+                    $gross = 0;
+                    $discount = 0;
+                    $tax = 0; 
+                    $net = 0;
+                    $amount = 0;
+                    $erpTaxRate = 0;
+                    $product = new products($this->db);
+                    $measureunit = new measureunits($this->db);
+                    
+                    /**
+                     * Author: francis.lubanga@gmail.com
+                     * Date: 2024-05-20
+                     * Description: Handle fees/taxes which have no rates, and are passed as invoice line items
+                     */
+                    $mapped_fees = array();
+                    
+                    /**
+                     * Author: francis.lubanga@gmail.com
+                     * Date: 2026-01-10
+                     * Description: We wil hold excise duty related details here.
+                     */
+                    $exciseduty_details = array();
+                    
+                    if(trim($this->appsettings['CHECK_FEE_MAP_FLAG']) == '1'){
+                        $this->logger->write("Api : uploadinvoice() : The check fees mapping is on", 'r');
+                        
+                        $feesmapping = new feesmapping($this->db);
+                        $feesmappings = $feesmapping->all();
+                        
+                        foreach ($feesmappings as $f_obj) {
+                            $this->logger->write("Api : uploadinvoice() : The fee code is " . $f_obj['feecode'], 'r');
+                            $this->logger->write("Api : uploadinvoice() : The product code is " . strtoupper($f_obj['productcode']), 'r');
+                            
+                            $mapped_fees[] = array(
+                                'id' => empty($f_obj['id'])? '' : $f_obj['id'],
+                                'feecode' => empty($f_obj['feecode'])? '' : $f_obj['feecode'],
+                                'productcode' => empty($f_obj['productcode'])? '' : strtoupper($f_obj['productcode']),
+                                'amount' => 0
+                            );
+                        }
+                    }
+                    
+                    if (isset($json['INVENTORIES'])) {
+                        foreach ($json['INVENTORIES'] as $obj){
+                            $this->logger->write("Api : uploadinvoice() : The PRODUCTCODE is " . $obj['PRODUCTCODE'], 'r');
+                            
+                            $ii = 0;
+                            $product_skip_flag = 0;
+                            
+                            foreach ($mapped_fees as $m_obj) {
+                                if(strtoupper(trim($m_obj['productcode'])) == strtoupper(trim($obj['PRODUCTCODE']))){
+                                    $this->logger->write("Api : uploadinvoice() : The product " . $obj['PRODUCTCODE'] . " is mapped to a tax/fee " . $m_obj['feecode'], 'r');
+                                    
+                                    $f_qty = trim($obj['QTY']);
+                                    $f_unit = trim($obj['RATE']);
+                                    
+                                    # $mapped_fees[$ii]['amount'] = ($f_qty * $f_unit); # Might be problematic. Consider "foreach ($mapped_fees as &$m_obj) {"
+                                    /**
+                                     * Author: francis.lubanga@gmail.com
+                                     * Date: 2024-05-30
+                                     * Description: Resolve cases where an invoice has the same product code more than once. The last instance of the product code overwrites the other instances
+                                     */
+                                    $this->logger->write("Api : uploadinvoice() : The previous amount on this product is " . $m_obj['amount'], 'r');
+                                    $mapped_fees[$ii]['amount'] = $m_obj['amount'] + ($f_qty * $f_unit);
+                                    $product_skip_flag = 1;
+                                    break;
+                                }
+                                
+                                $ii = $ii + 1;
+                            }
+                            
+                            if ($product_skip_flag == 1){
+                                continue;
+                            }
+                                                        
+                            $product->getByErpCode(strtoupper(trim($obj['PRODUCTCODE'])));
+                            $measureunit->getByCode($product->measureunit);
+                            
+                            $qty = trim($obj['QTY']);
+                            $unit = trim($obj['RATE']);
+                            $amount = trim($obj['AMOUNT']);
+                            $erpTaxRate = empty(trim($obj['TAXRATE']))? 0 : trim($obj['TAXRATE']);
+                            $discount = empty(trim($obj['DISCOUNT']))? 0 : (float)trim($obj['DISCOUNT']);
+                            $discountpct = empty(trim($obj['DISCOUNTPCT']))? 0 : (float)trim($obj['DISCOUNTPCT']);
+                            $lineDiscountFlag = '';
+                            if (isset($obj['DISCOUNTFLAG'])) {
+                                $lineDiscountFlag = strtoupper(trim((string)$obj['DISCOUNTFLAG']));
+                            } elseif (isset($obj['discountflag'])) {
+                                $lineDiscountFlag = strtoupper(trim((string)$obj['discountflag']));
+                            }
+
+                            if (in_array($lineDiscountFlag, array('1', 'YES', 'Y', 'TRUE'), true)) {
+                                $lineDiscountFlag = '1';
+                            } elseif (in_array($lineDiscountFlag, array('2', '0', 'NO', 'N', 'FALSE'), true)) {
+                                $lineDiscountFlag = '2';
+                            } else {
+                                $lineDiscountFlag = '';
+                            }
+
+                            // Maintainer note (2026-04-14): enforce explicit discount semantics.
+                            // When a line carries discount amount/percentage, ERP must send DISCOUNTFLAG too.
+                            // Maintainer note (2026-04-17): DISCOUNTPCT is a decimal fraction (0.25 = 25%).
+                            // For DISCOUNTFLAG=1, both DISCOUNT and DISCOUNTPCT must be non-empty and > 0.
+                            $discountRaw = isset($obj['DISCOUNT']) ? trim((string)$obj['DISCOUNT']) : '';
+                            $discountPctRaw = isset($obj['DISCOUNTPCT']) ? trim((string)$obj['DISCOUNTPCT']) : '';
+                            $discountAmountValue = ($discountRaw !== '') ? (float)$this->util->removecommasfromamount($discountRaw) : 0;
+                            $discountPctValue = ($discountPctRaw !== '') ? (float)$this->util->removecommasfromamount($discountPctRaw) : 0;
+                            $hasLineDiscount = ($discountAmountValue > 0 || $discountPctValue > 0);
+
+                            if ($discountPctRaw !== '' && $discountPctValue > 1) {
+                                $this->logger->write("Api : uploadinvoice() : DISCOUNTPCT must be a decimal fraction for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has invalid DISCOUNTPCT. Send a decimal fraction (e.g. 0.25 for 25%).";
+                                $this->code = '-999';
+
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+
+                                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload an invoice failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                                $this->response = array(
+                                    "response" => array(
+                                        "responseCode" => $this->code,
+                                        "responseMessage" => $this->message
+                                    ),
+                                    "data" => array(
+                                        "INVID" => "",
+                                        "INVNO" => "",
+                                        "ISSUEDT" => "",
+                                        "FDN" => "",
+                                        "QRCODE" => ""
+                                    )
+                                );
+
+                                $len = sizeof($this->response);
+                                header ("CONTENT-LENGTH:".$len);
+                                die(json_encode($this->response));
+                                return;
+                            }
+
+                            // Maintainer note (2026-04-14): fail fast to avoid implicit flag inference.
+                            if ($hasLineDiscount && $lineDiscountFlag == '') {
+                                $this->logger->write("Api : uploadinvoice() : DISCOUNTFLAG is required when DISCOUNT or DISCOUNTPCT is populated for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has DISCOUNT/DISCOUNTPCT but no valid DISCOUNTFLAG. Expected 1 or 2.";
+                                $this->code = '-999';
+
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+
+                                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload an invoice failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                                $this->response = array(
+                                    "response" => array(
+                                        "responseCode" => $this->code,
+                                        "responseMessage" => $this->message
+                                    ),
+                                    "data" => array(
+                                        "INVID" => "",
+                                        "INVNO" => "",
+                                        "ISSUEDT" => "",
+                                        "FDN" => "",
+                                        "QRCODE" => ""
+                                    )
+                                );
+
+                                $len = sizeof($this->response);
+                                header ("CONTENT-LENGTH:".$len);
+                                die(json_encode($this->response));
+                                return;
+                            }
+
+                            if ($lineDiscountFlag == '1' && ($discountAmountValue <= 0 || $discountPctValue <= 0)) {
+                                $this->logger->write("Api : uploadinvoice() : DISCOUNT and DISCOUNTPCT are mandatory and must be > 0 when DISCOUNTFLAG=1 for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has DISCOUNTFLAG=1 but DISCOUNT and DISCOUNTPCT are missing/zero.";
+                                $this->code = '-999';
+
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+
+                                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload an invoice failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                                $this->response = array(
+                                    "response" => array(
+                                        "responseCode" => $this->code,
+                                        "responseMessage" => $this->message
+                                    ),
+                                    "data" => array(
+                                        "INVID" => "",
+                                        "INVNO" => "",
+                                        "ISSUEDT" => "",
+                                        "FDN" => "",
+                                        "QRCODE" => ""
+                                    )
+                                );
+
+                                $len = sizeof($this->response);
+                                header ("CONTENT-LENGTH:".$len);
+                                die(json_encode($this->response));
+                                return;
+                            }
+                            $taxcode = $obj['TAXCODE'];
+                            $tr->getByErpCode($taxcode);
+                            $taxid = $tr->id;
+                            
+                            
+                            /**
+                             * Can we determine the DISCOUNT PERCENTAGE incase it is a line DISCOUNT provided?
+                             */
+                            if ($lineDiscountFlag == '1') {
+                                $discountpct = $discountPctValue;
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
+                            } elseif ($discountpct == 0 && $discount > 0 && (float)$amount > 0) {
+                                $discountpct = $discount/$amount;
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
+                            } else {
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
+                            }
+                            
+                            if (trim($taxcode) == '' || empty($taxcode)) {
+                                $this->logger->write("Api : uploadinvoice() : The PRODUCTCODE " . $obj['PRODUCTCODE'] . " does not have a TAXCODE", 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " does not have a TAXCODE!";
+                                $this->code = '-999';
+                                //break;//exit loop
+                                
+                                //return to the client
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                
+                                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload an invoice failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                                
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                                
+                                
+                                $this->response = array(
+                                    "response" => array(
+                                        "responseCode" => $this->code,
+                                        "responseMessage" => $this->message
+                                    ),
+                                    "data" => array(
+                                        "INVID" => "",
+                                        "INVNO" => "",
+                                        "ISSUEDT" => "",
+                                        "FDN" => "",
+                                        "QRCODE" => ""
+                                    )
+                                );
+                                
+                                $len = sizeof($this->response);
+                                header ("CONTENT-LENGTH:".$len);
+                                //print $this->response;
+                                die(json_encode($this->response));
+                                return;
+                                
+                            } else {
+                                
+                                if (trim($taxid) == '' || empty($taxid)) {
+                                    $this->logger->write("Api : uploadinvoice() : The TAXCODE on PRODUCTCODE " . $obj['PRODUCTCODE'] . " is not defined", 'r');
+                                    $this->message = "The TAXCODE on PRODUCTCODE " . $obj['PRODUCTCODE'] . " is not defined!";
+                                    $this->code = '-999';
+                                    //break;//exit loop
+                                    
+                                    //return to the client
+                                    $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                    
+                                    $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload an invoice failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                                    
+                                    $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                                    
+                                    
+                                    $this->response = array(
+                                        "response" => array(
+                                            "responseCode" => $this->code,
+                                            "responseMessage" => $this->message
+                                        ),
+                                        "data" => array(
+                                            "INVID" => "",
+                                            "INVNO" => "",
+                                            "ISSUEDT" => "",
+                                            "FDN" => "",
+                                            "QRCODE" => ""
+                                        )
+                                    );
+                                    
+                                    $len = sizeof($this->response);
+                                    header ("CONTENT-LENGTH:".$len);
+                                    //print $this->response;
+                                    die(json_encode($this->response));
+                                    return;
+                                } else {
+                                    if ($taxid == $this->appsettings['DEEMEDTAXRATE']) {
+                                        $deemedflag = 'YES';
+                                    } else {
+                                        $deemedflag = 'NO';
+                                    }
+
+                                    /**
+                                     * Date: 2025-06-27
+                                     * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                     * Description: Hard code the tax rate for Commodity Category Code 96010102
+                                    */
+                                    if (trim($product->commoditycategorycode) == '96010102') {
+                                        $this->logger->write("Api : uploadinvoice() : The product code is 96010102. Hard coding the tax id to 13", 'r');
+                                        $taxid = '13'; // 13 is the tax id for VAT OUT OF SCOPE
+                                        
+                                        $tr->getByID($taxid);
+                                    }                                   
+                                    
+                                    $this->logger->write("Api : uploadinvoice() : The final TAXID is " . $taxid, 'r');
+                                    
+                                    /**
+                                     * Date: 2026-01-11
+                                     * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                     * Description: Check for export & export service
+                                     */
+                                    //if (str_contains(strtolower($json['BUYERPLACEOFBUSI']), "uganda")) {
+                                    if (stripos(strtolower($json['BUYERPLACEOFBUSI']), "uganda") !== false) {
+                                        $this->logger->write("Api : uploadinvoice() : This is a local invoice" , 'r');
+                                        
+                                        /**
+                                         * Date: 2026-01-09
+                                         * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                         * Description: Implement excise duty
+                                         */
+                                        
+                                        if (strlen(trim($product->exciseDutyCode)) != 0 && trim($product->exciseDutyCode) != 'NULL' && trim($product->hasexcisetax) == '101') {
+                                            $this->logger->write("Api : uploadinvoice() : The product has excise duty", 'r');
+                                            
+                                            $exciseduty_details[] = $this->util->computeExciseDuty($this->userid_u, $product->code, $qty, $unit, $amount, $discount, $discountpct);
+                                            
+                                            $this->logger->write("Api : uploadinvoice() : The excise duty count: " . sizeof($exciseduty_details), 'r');
+                                            $this->logger->write("Api : uploadinvoice() : exciseduty_details = " . json_encode($exciseduty_details), 'r');
+                                            
+                                            $this->logger->write("Api : uploadinvoice() : itemCode = " . $exciseduty_details[0][0]['itemCode'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : exciseFlag = " . $exciseduty_details[0][0]['exciseFlag'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : categoryId = " . $exciseduty_details[0][0]['categoryId'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : categoryName = " . $exciseduty_details[0][0]['categoryName'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : exciseRate = " . $exciseduty_details[0][0]['exciseRate'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : exciseRule = " . $exciseduty_details[0][0]['exciseRule'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : exciseTax = " . $exciseduty_details[0][0]['exciseTax'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : pack = " . $exciseduty_details[0][0]['pack'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : stick = " . $exciseduty_details[0][0]['stick'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : exciseUnit = " . $exciseduty_details[0][0]['exciseUnit'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : exciseCurrency = " . $exciseduty_details[0][0]['exciseCurrency'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : exciseRateName = " . $exciseduty_details[0][0]['exciseRateName'], 'r');
+                                            
+                                            // Adjust the amount from the ERP accordingly
+                                            $unit = (float)$unit + ((float)$exciseduty_details[0][0]['exciseTax'])/$qty;
+                                        } else {
+                                            $this->logger->write("Api : uploadinvoice() : The product has NO excise duty", 'r');
+                                        }
+                                    } else {
+                                        $this->logger->write("Api : uploadinvoice() : The place of business is " . $json['BUYERPLACEOFBUSI'], 'r');
+                                        
+                                        
+                                        if(strtoupper(trim($json['NONRESIDENTFLAG'])) == '1'){
+                                            $this->logger->write("Api : uploadinvoice() : The buyer is Non-Resident", 'r');
+                                            
+                                            if(trim($json['INDUSTRYCODE']) == '112'){
+                                                $this->logger->write("Api : uploadinvoice() : This is an export service", 'r');
+                                                $taxid = '2'; // B: Zero (0%)
+                                                
+                                                $tr->getByID($taxid);
+                                            } elseif(trim($json['INDUSTRYCODE']) == '102'){
+                                                $this->logger->write("Api : uploadinvoice() : This is an export", 'r');
+                                                $taxid = '2'; // B: Zero (0%)
+                                                
+                                                $tr->getByID($taxid);
+                                            }
+                                            
+                                            
+                                        } else {
+                                            $this->logger->write("Api : uploadinvoice() : The buyer is a Resident", 'r');
+                                            
+                                            if (strlen(trim($product->exciseDutyCode)) != 0 && trim($product->exciseDutyCode) != 'NULL' && trim($product->hasexcisetax) == '101') {
+                                                $this->logger->write("Api : uploadinvoice() : The product has excise duty", 'r');
+                                                
+                                                $exciseduty_details[] = $this->util->computeExciseDuty($this->userid_u, $product->code, $qty, $unit, $amount, $discount, $discountpct);
+                                                
+                                                $this->logger->write("Api : uploadinvoice() : The excise duty count: " . sizeof($exciseduty_details), 'r');
+                                                $this->logger->write("Api : uploadinvoice() : exciseduty_details = " . json_encode($exciseduty_details), 'r');
+                                                
+                                                $this->logger->write("Api : uploadinvoice() : itemCode = " . $exciseduty_details[0][0]['itemCode'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : exciseFlag = " . $exciseduty_details[0][0]['exciseFlag'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : categoryId = " . $exciseduty_details[0][0]['categoryId'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : categoryName = " . $exciseduty_details[0][0]['categoryName'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : exciseRate = " . $exciseduty_details[0][0]['exciseRate'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : exciseRule = " . $exciseduty_details[0][0]['exciseRule'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : exciseTax = " . $exciseduty_details[0][0]['exciseTax'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : pack = " . $exciseduty_details[0][0]['pack'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : stick = " . $exciseduty_details[0][0]['stick'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : exciseUnit = " . $exciseduty_details[0][0]['exciseUnit'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : exciseCurrency = " . $exciseduty_details[0][0]['exciseCurrency'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : exciseRateName = " . $exciseduty_details[0][0]['exciseRateName'], 'r');
+                                                
+                                                // Adjust the amount from the ERP accordingly
+                                                $unit = (float)$unit + ((float)$exciseduty_details[0][0]['exciseTax'])/$qty;
+                                            } else {
+                                                $this->logger->write("Api : uploadinvoice() : The product has NO excise duty", 'r');
+                                            }
+                                        }
+                                    }
+                                    
+                                    
+                                    
+                                    
+                                    $taxname = $tr->name;
+                                    // $taxcategory = $tr->category;
+                                    $taxcategory = $tr->description;
+                                    $taxdisplaycategory = $tr->displayCategoryCode;
+                                    $taxdescription = $tr->description;
+                                    $rate = $tr->rate? $tr->rate : $erpTaxRate;
+                                    
+                                    if ($pricevatinclusive == 'NO') {
+                                        $this->logger->write("Api : uploadinvoice() : The price is tax exclusive!", 'r');
+                                        
+                                        /**
+                                         * Recalculate TAX here
+                                         */
+                                        
+                                        //Manually calculate figures
+                                        $this->logger->write("Api : uploadinvoice() : Manually calculating tax", 'r');
+                                        
+                                        if ($rate > 0) {
+                                            $unit = $unit * ($rate + 1);
+                                        }
+                                        
+                                        $total = ($qty * $unit);//??
+                                        
+                                        $discount = $discountpct * $total;
+                                        
+                                        /**
+                                         * Modification Date: 2021-01-26
+                                         * Description: Resolving error code 2776 - goodsDetails-->tax: Tax calculation error!Collection index:0
+                                         * */
+                                        //$gross = $total - $discount;
+                                        $gross = $total;
+                                        
+                                        $discount = (-1) * $discount;
+                                        
+                                        $tax = ($gross/($rate + 1)) * $rate; //??
+                                        
+                                        $net = $gross - $tax;
+                                    } else {
+                                        $this->logger->write("Api : uploadinvoice() : The price is tax inclusive!", 'r');
+                                        
+                                        /**
+                                         * Use the figures as they come from the ERP
+                                         */
+                                        $total = ($qty * $unit);
+                                        
+                                        $discount = $discountpct * $total;
+                                        
+                                        /**
+                                         * Modification Date: 2021-01-26
+                                         * Description: Resolving error code 2776 - goodsDetails-->tax: Tax calculation error!Collection index:0
+                                         * */
+                                        //$gross = $total - $discount;
+                                        $gross = $total;
+                                        
+                                        $discount = (-1) * $discount;
+                                        
+                                        $tax = ($gross/($rate + 1)) * $rate; //??
+                                        
+                                        $net = $gross - $tax;
+                                    }
+                                    
+                                    /**
+                                     * Over-ride tax, if the tax payer is not VAT registered
+                                     */
+                                    if ($this->vatRegistered == 'N') {
+                                        $tax = 0;
+                                        $taxcategory = NULL;
+                                        $taxcode = NULL;
+                                    }
+                                    
+                                    
+                                    
+                                    $netamount = $netamount + $net;
+                                    $taxamount = $taxamount + $tax;
+                                    
+                                    $grossamount = $grossamount + $gross;
+                                    $itemcount = $itemcount + 1;
+                                    
+                                    if ($lineDiscountFlag == '1') {
+                                        $discountflag = 'YES';
+                                    } elseif ($lineDiscountFlag == '2') {
+                                        $discountflag = 'NO';
+                                    } elseif ($discount == 0) {
+                                        $discountflag = 'NO';
+                                    } else {
+                                        $discountflag = 'YES';
+                                    }
+
+                                    $effectiveDiscountFlag = trim($discountflag) == 'NO'? '2' : '1';
+                                    
+                                    
+                                    $goods[] = array(
+                                        'groupid' => NULL,
+                                        'item' => $product->name,
+                                        'itemcode' => strtoupper(trim($obj['PRODUCTCODE'])),
+                                        'qty' => $qty,
+                                        'unitofmeasure' => $product->measureunit,
+                                        'unitprice' => $unit,
+                                        'total' => $total,
+                                        'taxid' => $taxid,
+                                        'taxrate' => $rate,
+                                        'tax' => $tax,
+                                        'discounttotal' => $discount,
+                                        'discounttaxrate' => $rate,
+                                        'discountpercentage' => $discountpct,
+                                        'ordernumber' => NULL,
+                                        'discountflag' => $effectiveDiscountFlag,
+                                        'deemedflag' => (strtoupper(trim($deemedflag)) == 'NO'? '2' : '1'),
+                                        'exciseflag' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseFlag'] : NULL,
+                                        'categoryid' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['categoryId'] : NULL,
+                                        'categoryname' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['categoryName'] : NULL,
+                                        'goodscategoryid' => $product->commoditycategorycode,
+                                        'goodscategoryname' => NULL,
+                                        'exciserate' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRate'] : NULL,
+                                        'exciserule' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRule'] : NULL,
+                                        'excisetax' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseTax'] : NULL,
+                                        'pack' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['pack'] : NULL,
+                                        'stick' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['stick'] : NULL,
+                                        'exciseunit' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseUnit'] : NULL,
+                                        'excisecurrency' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseCurrency'] : NULL,
+                                        'exciseratename' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRateName'] : NULL,
+                                        'taxdisplaycategory' => $taxdisplaycategory,
+                                        'taxcategory' => $taxcategory,
+                                        'taxcategoryCode' => $tr->code,
+                                        'unitofmeasurename' => $measureunit->name,
+                                        'pieceMeasureUnit' => $product->piecemeasureunit,
+                                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                                        'vatProjectId' => trim($json['PROJECTID']),
+                                        'vatProjectName' => trim($json['PROJECTNAME']),
+                                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE']))
+
+                                    );
+                                    
+                                    
+                                    
+                                    if ($this->vatRegistered == 'Y') {
+                                        $taxes[] = array(
+                                            'discountflag' => $effectiveDiscountFlag,
+                                            'discounttotal' => $discount,
+                                            'discounttaxrate' => $rate,
+                                            'discountpercentage' => $discountpct,
+                                            'd_netamount' => NULL,
+                                            'd_taxamount' => NULL,
+                                            'd_grossamount' => NULL,
+                                            'groupid' => NULL,
+                                            'goodid' => NULL,
+                                            'taxdisplaycategory' => $taxdisplaycategory,
+                                            'taxcategory' => $taxcategory,
+                                            'taxcategoryCode' => $tr->code,
+                                            'netamount' => $net,
+                                            'taxrate' => $rate,
+                                            'taxamount' => $tax,
+                                            'grossamount' => $gross,
+                                            'exciseunit' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseUnit'] : NULL,
+                                            'excisecurrency' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseCurrency'] : NULL,
+                                            'taxratename' => $taxname,
+                                            'taxdescription' => $taxdescription
+                                        );
+                                        
+                                        /**
+                                         * Date: 2026-01-10
+                                         * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                         * Description: Add an excise duty tax block to the tax array
+                                         */
+                                        if(sizeof($exciseduty_details) == 1){
+                                            $taxes[] = array(
+                                                'discountflag' => $effectiveDiscountFlag,
+                                                'discounttotal' => $discount,
+                                                'discounttaxrate' => $rate,
+                                                'discountpercentage' => $discountpct,
+                                                'd_netamount' => NULL,
+                                                'd_taxamount' => NULL,
+                                                'd_grossamount' => NULL,
+                                                'groupid' => NULL,
+                                                'goodid' => NULL,
+                                                'taxdisplaycategory' => $taxdisplaycategory,
+                                                'taxcategory' => "E: Excise Duty",
+                                                'taxcategoryCode' => "05",
+                                                'netamount' => sizeof($exciseduty_details) == 1? ((float)$net - (float)$exciseduty_details[0][0]['exciseTax']) : 0,
+                                                'taxrate' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRate'] : NULL,
+                                                'taxamount' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseTax'] : 0,
+                                                'grossamount' => $net, //It appears like the NET from the main tax above, serves as the GROSS for excise
+                                                'exciseunit' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseUnit'] : NULL,
+                                                'excisecurrency' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseCurrency'] : NULL,
+                                                'taxratename' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRateName'] : NULL,
+                                                'taxdescription' => "E"
+                                            );
+                                        }
+                                    }                                                                        
+                                }
+                                
+                            } 
+                            
+                            // Should we empty exciseduty_details at this point?
+                            $this->logger->write("Api : uploadinvoice() : Emptying the excise duty array", 'r');
+                            $exciseduty_details = array();
+                        }//END OF FOREACH
+                        
+                        //***Proceed with INVOICE logic here****//
+                        
+                        if (sizeof($goods) > 0) {
+                            foreach ($mapped_fees as $m_obj) {
+                                $this->logger->write("Api : uploadinvoice() : Adding fees to the tax array", 'r');
+                                
+                                $tr = new taxrates($this->db);
+                                $tr->getByCode($m_obj['feecode']);
+                                $taxcode = $tr->code;
+                                $taxname = $tr->name;
+                                $taxcategory = $tr->category;
+                                $taxdescription = $tr->description;
+                                $taxdisplaycategory = $tr->displayCategoryCode;
+                                
+                                if((float)$m_obj['amount'] <> 0){
+                                    $taxes[] = array(
+                                        'discountflag' => '1',
+                                        'discounttotal' => NULL,
+                                        'discounttaxrate' => NULL,
+                                        'discountpercentage' => NULL,
+                                        'd_netamount' => NULL,
+                                        'd_taxamount' => NULL,
+                                        'd_grossamount' => NULL,
+                                        'groupid' => NULL,
+                                        'goodid' => NULL,
+                                        'taxdisplaycategory' => $taxdisplaycategory,
+                                        'taxcategory' => $taxcategory,
+                                        'taxcategoryCode' => $taxcode,
+                                        'netamount' => 0,
+                                        'taxrate' => $m_obj['amount'],
+                                        'taxamount' => $m_obj['amount'],
+                                        'grossamount' => $m_obj['amount'],
+                                        'exciseunit' => NULL,
+                                        'excisecurrency' => NULL,
+                                        'taxratename' => $taxname,
+                                        'taxdescription' => $taxdescription
+                                    );
+                                }
+                                else {
+                                    continue;
+                                }
+                            }
+                            
+                            $this->logger->write("Api : uploadinvoice() : The GOODS count: " . sizeof($goods), 'r');
+                            $this->logger->write("Api : uploadinvoice() : The TAX count: " . sizeof($taxes), 'r');
+                            $this->logger->write("Api : uploadinvoice() : The PAYMENTS count: " . sizeof($payments), 'r');
+                            
+                            $data = $this->util->uploadinvoice($this->userid_u, $branch->uraid, $buyer, $invoicedetails, $goods, $payments, $taxes);
+                            $data = json_decode($data, true);
+                            
+                            if (isset($data['returnCode'])){
+                                $this->logger->write("Api : uploadinvoice() : The operation to upload the invoice not successful. The error message is " . $data['returnMessage'], 'r');
+                                //$this->util->createinappnotification(NULL, NULL, NULL, self::$module, self::$submodule, $operation, $event, $eventnotification, NULL, $this->f3->get('SESSION.id'), "The operation to upload the invoice by " . $this->f3->get('SESSION.username') . " was not successful");
+                                $this->message = $data['returnMessage'];
+                                $this->code = $data['returnCode'];
+                                
+                                
+                                /**
+                                 * If the invoice passed the duplicate check due to an error or incomplete parameters, but EFRIS determines that it is a duplicate invoice,
+                                 * We insert it into the database?
+                                 * 
+                                 * 2253 - Invoice(s)/receipt(s) with the same Seller's Reference Number have already been issued!(Online)
+                                 * 
+                                 * The issue is that the invoice update API will not return the details of the invoice, hence there is nothing to insert.
+                                 * A manual routine sync can be used to catch this.
+                                 * 
+                                 */
+                                
+                                
+                                //$body = $this->code . ' : ' . $this->message;
+                                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload an invoice failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                                
+                                
+                                
+                                $this->util->sendemailnotification($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                            } else {
+                                if (isset($data['basicInformation'])){
+                                    $antifakeCode = $data['basicInformation']['antifakeCode']; //32966911991799104051
+                                    $invoiceId = $data['basicInformation']['invoiceId']; //3257429764295992735
+                                    $invoiceNo = $data['basicInformation']['invoiceNo']; //3120012276043
+                                    
+                                    $issuedDate = $data['basicInformation']['issuedDate']; //18/09/2020 17:14:12
+                                    $issuedDate = str_replace('/', '-', $issuedDate);//Replace / with -
+                                    $issuedDate = date("Y-m-d H:i:s", strtotime($issuedDate));
+                                    
+                                    $issuedTime = $data['basicInformation']['issuedDate']; //18/09/2020 17:14:12
+                                    $issuedTime = str_replace('/', '-', $issuedTime);//Replace / with -
+                                    $issuedTime = date("Y-m-d H:i:s", strtotime($issuedTime));
+                                    
+                                    $issuedDatePdf = $data['basicInformation']['issuedDatePdf']; //318/09/2020 17:14:12
+                                    $issuedDatePdf = str_replace('/', '-', $issuedDatePdf);//Replace / with -
+                                    $issuedDatePdf = date("Y-m-d H:i:s", strtotime($issuedDatePdf));
+                                    
+                                    $oriInvoiceId = $data['basicInformation']['oriInvoiceId'];//1
+                                    $isInvalid = $data['basicInformation']['isInvalid'];//1
+                                    $isRefund = $data['basicInformation']['isRefund'];//1
+                                    $currencyRate = $data['basicInformation']['currencyRate'];
+                                    
+                                    $invoiceid = $invoiceId;
+                                    $invoicenumber = $invoiceNo;
+                                    $issueddate = $issuedDate;
+                                    $fdn = $antifakeCode;
+                                }
+                                
+                                if (isset($data['summary'])){
+                                    $grossAmount = $data['summary']['grossAmount']; //832000
+                                    $itemCount = $data['summary']['itemCount']; //1
+                                    $netAmount = $data['summary']['netAmount']; //705084.75
+                                    $qrCode = $data['summary']['qrCode']; //020000001149IC1200122760430004F588000000C1A8450A20A021D534A1121462A1000094968~MM INTERGRATED STEEL MILLS (UGANDA) LIMITED~Ediomu & Company~Kiboko Galv Corr. Sheet 36G
+                                    $taxAmount = $data['summary']['taxAmount'];//126915.25
+                                    $modeCode = $data['summary']['modeCode'];//0
+                                    
+                                    $mode = new modes($this->db);
+                                    $mode->getByCode($modeCode);
+                                    $modeName = $mode->name;//online
+                                    
+                                    $f = new \NumberFormatter("en", NumberFormatter::SPELLOUT);
+                                    $grossAmountWords = $f->format($grossAmount);//two million,
+                                    
+                                    $qr = $qrCode;
+                                    
+                                    
+                                }
+                                
+                                $invoicedetails['einvoicedatamatrixcode'] = $qrCode;
+                                $invoicedetails['grossamountword'] = $grossAmountWords;
+                                $invoicedetails['modename'] = $modeName;
+                                $invoicedetails['modecode'] = $modeCode;
+                                $invoicedetails['taxamount'] = $taxAmount;
+                                $invoicedetails['netamount'] = $netAmount;
+                                $invoicedetails['itemcount'] = $itemCount;
+                                $invoicedetails['grossamount'] = $grossAmount;
+                                $invoicedetails['antifakecode'] = $antifakeCode;
+                                $invoicedetails['issueddate'] = $issuedDate;
+                                $invoicedetails['einvoicenumber'] = $invoiceNo;
+                                $invoicedetails['einvoiceid'] = $invoiceId;
+                                $invoicedetails['isinvalid'] = $isRefund;
+                                $invoicedetails['isrefund'] = $isInvalid;
+                                $invoicedetails['oriinvoiceid'] = $oriInvoiceId;
+                                $invoicedetails['issueddatepdf'] = $issuedDatePdf;
+                                $invoicedetails['issuedtime'] = $issuedTime;
+                                $invoicedetails['origrossamount'] = '0';
+                                $invoicedetails['currencyRate'] = $currencyRate;
+                                
+                                $inv_status = $this->util->createinvoice($invoicedetails, $goods, $taxes, $buyer, $this->userid_u);
+                                
+                                if ($inv_status) {
+                                    $this->logger->write("Api : uploadinvoice() : The invoice was created on e-TW successfully", 'r');
+                                } else {
+                                    $this->logger->write("Api : uploadinvoice() : The invoice was NOT created on e-TW", 'r');
+                                }
+                                
+                                $this->message = 'The operation to upload the invoice was successful';
+                                $this->code = '00';
+                            }
+                        } else {
+                            
+                            $this->logger->write("Api : uploadinvoice() : No goods details were supplied!", 'r');
+                            $this->message = "No goods details were supplied!";
+                            $this->code = '-999';
+                            
+                            //$body = $this->code . ' : ' . $this->message;
+                            $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload an invoice failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                            
+                        }
+                    } else {
+                        $this->logger->write("Api : uploadinvoice() : No goods details were supplied!", 'r');
+                        $this->message = "No goods details were supplied!";
+                        $this->code = '-999';
+                        
+                        //$body = $this->code . ' : ' . $this->message;
+                        $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload an invoice failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    }
+                    
+                } else {
+                    $this->message = 'The invoice has already been uploaded into EFRIS';
+                    $this->code = '99';
+                    
+                    $invoiceid = $inv_check->einvoiceid;
+                    $invoicenumber = $inv_check->einvoicenumber;
+                    $issueddate = $inv_check->issuedtime;
+                    $fdn = $inv_check->antifakecode;
+                    $qr = $inv_check->einvoicedatamatrixcode;
+                }
+            } else {
+                $this->logger->write("Api : uploadinvoice() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+            
+            
+            $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+        }
+        
+        
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array(
+                "INVID" => $invoiceid,
+                "INVNO" => $fdn,
+                "ISSUEDT" => $issueddate,
+                "FDN" => $invoicenumber,
+                "QRCODE" => $qr
+            )
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+    }
+
+    
+    /**
+     *	@name uploadcreditnote
+     *  @desc upload creditnote
+     *	@return string response
+     *	@param NULL
+     **/
+    function uploadcreditnote(){
+        $operation = NULL; //tblevents
+        $permission = 'UPLOADCREDITNOTE'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            $creditnoteid = '';
+            $creditnotenumber = '';
+            $issueddate = '';
+            $fdn = '';
+            $qr = '';
+            $ref = '';
+            
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            
+            /**
+             *
+             * Steps to follow when uploading to EFRIS
+             * 0. Grab the json body from the ERP
+             * 1. Generate a groupid for the following;
+             * 1.1 Goods
+             * 1.2 Taxes
+             * 1.3 Payments
+             * 2. Create the following arrays
+             * 2.1 buyer
+             * 2.2 creditnotedetails
+             * 2.3 goods
+             * 2.4 payments
+             * 2.5 taxes
+             * 3. Send the items in [1] to the uploadcreditnote API
+             */
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            
+            $tcsdetails = new tcsdetails($this->db);
+            $tcsdetails->getByID($this->appsettings['EFRIS_TCS_RECORD_ID']);
+            
+            $companydetails = new organisations($this->db);
+            $companydetails->getByID($this->appsettings['SELLER_RECORD_ID']);
+            
+            $devicedetails = new devices($this->db);
+            $devicedetails->getByID($this->appsettings['EFRIS_DEVICE_RECORD_ID']);
+            
+            
+            
+            $vchtype = trim($json['VOUCHERTYPE']);
+            $vchtypename = trim($json['VOUCHERTYPENAME']);
+            $vchnumber = trim($json['VOUCHERNUMBER']);
+            $vchref = trim($json['VOUCHERREF']);
+            $orivchnumber = trim($json['ORIVOUCHERNUMBER']);/*holds the original invoice #*/
+            
+            $this->logger->write("Api : uploadcreditnote() : The userid is: " . $this->userid_u, 'r');
+            $this->logger->write("Api : uploadcreditnote() : Checking permissions", 'r');
+            
+            if ($this->userpermissions[$permission]) {
+                /**
+                 * Check if C/N is already issued
+                 *
+                 */
+                
+                $inv_check = new DB\SQL\Mapper($this->db, 'tblcreditnotes');
+                $inv_check->load(array('TRIM(erpcreditnoteid)=?', $vchnumber));
+                $this->logger->write($this->db->log(TRUE), 'r');
+                
+                if($inv_check->dry ()){
+                    $this->logger->write("Api : uploadcreditnote() : The creditnote does not exist on eTW. Proceed and upload", 'r');
+                    
+                    if(trim($orivchnumber) !== '' || ! empty(trim($orivchnumber))) {
+                        $this->logger->write("Api : uploadcreditnote() : The associated original invoice was supplied", 'r');
+                        
+                        $orig_inv = new DB\SQL\Mapper($this->db, 'tblinvoices');
+                        $orig_inv->load(array('TRIM(erpinvoiceid)=?', $orivchnumber));
+                        $this->logger->write($this->db->log(TRUE), 'r');
+                        
+                        if ($orig_inv->dry()) {
+                            $this->logger->write("Api : uploadcreditnote() : There associated original invoice does not exist in the database", 'r');
+                            $oriinvoiceid = NULL;
+                            $oriinvoiceno = NULL;
+                        } else {
+                            $this->logger->write("Api : uploadcreditnote() : There is an associated original invoice", 'r');
+                            $oriinvoiceid = $orig_inv->einvoiceid;
+                            $oriinvoiceno = $orig_inv->einvoicenumber;
+                            
+                            /**
+                             * Author: francis.lubanga@gmail.com
+                             * Date: 2021-02-28
+                             * Description: Resolve EFRIS error code 2783: oriInvoiceNo: cannot be empty!
+                             *
+                             *
+                             * 1. Check if oriinvoiceid is empty
+                             * 2. If oriinvoiceid is NOT empty, then ignore
+                             * 3. If it is empty, then query EFRIS and retrieve it
+                             * 4. Update the eTW record of this invoice
+                             */
+                            
+                            if(trim($oriinvoiceid) == '' || empty(trim($oriinvoiceid))) {
+                                $this->logger->write("Api : uploadcreditnote() : The oriinvoiceid is empty", 'r');
+                                
+                                if(trim($oriinvoiceno) == '' || empty(trim($oriinvoiceno))) {
+                                    $this->logger->write("Api : uploadcreditnote() : The oriinvoiceno is empty", 'r');
+                                } else {
+                                    $this->logger->write("Api : uploadcreditnote() : The oriinvoiceno is NOT empty", 'r');
+                                    $i_data = $this->util->downloadinvoice($this->userid_u, $oriinvoiceno);
+                                    $i_data = json_decode($i_data, true);
+                                    
+                                    /*START OF INVOICE BLOCK*/
+                                    if (isset($i_data['basicInformation'])){
+                                        $TempInvoiceId = $i_data['basicInformation']['invoiceId']; //3257429764295992735
+                                        $TempInvoiceNo = $i_data['basicInformation']['invoiceNo']; //3120012276043
+                                        
+                                        if (trim($TempInvoiceNo) == trim($oriinvoiceno)) {
+                                            $oriinvoiceid = $TempInvoiceId;
+                                        }
+                                    }
+                                    /*END INVOICE BLOCK*/
+                                    
+                                    try{
+                                        $this->db->exec(array('UPDATE tblinvoices SET einvoiceid = "' . $oriinvoiceid . '", modifieddt = NOW(), modifiedby = ' . $this->userid . ' WHERE einvoicenumber = "' . $oriinvoiceno . '"'));
+                                        $this->logger->write($this->db->log(TRUE), 'r');
+                                    } catch (Exception $e) {
+                                        $this->logger->write("Api : uploadcreditnote() : Failed to update the table tblinvoices. The error message is " . $e->getMessage(), 'r');
+                                    }
+                                }
+                            } else {
+                                $this->logger->write("Api : uploadcreditnote() : The oriinvoiceid is not empty", 'r');
+                            }
+                        }
+                    } else {
+                        $this->logger->write("Api : uploadcreditnote() : The associated original invoice number was not supplied", 'r');
+                        $oriinvoiceid = NULL;
+                        $oriinvoiceno = NULL;
+                        
+                        $this->message = "The associated original invoice number was not supplied!";
+                        $this->code = '-999';
+                        
+                        //$body = $this->code . ' : ' . $this->message;
+                        $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a creditnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                        
+                        //return to the client
+                        $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                        
+                        $this->response = array(
+                            "response" => array(
+                                "responseCode" => $this->code,
+                                "responseMessage" => $this->message
+                            ),
+                            "data" => array(
+                                "INVID" => "",
+                                "INVNO" => "",
+                                "ISSUEDT" => "",
+                                "FDN" => "",
+                                "QRCODE" => "",
+                                "REFERENCE" => ""
+                            )
+                        );
+                        
+                        $len = sizeof($this->response);
+                        header ("CONTENT-LENGTH:".$len);
+                        //print $this->response;
+                        die(json_encode($this->response));
+                        return;
+                    }
+                    
+                    $reasoncode = NULL;
+                    $reason = NULL;
+                    
+                    if (isset($json['REASONS'])) {
+                        foreach ($json['REASONS'] as $obj){
+                            $reasoncode = trim($obj['REASONCODE']);
+                            $reason = trim($obj['REASON']);
+                        }
+                    } else {
+                        $this->logger->write("Api : uploadcreditnote() : No reason was supplied!", 'r');
+                        $this->message = "No reason was supplied!";
+                        $this->code = '-999';
+                        
+                        //$body = $this->code . ' : ' . $this->message;
+                        $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a creditnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                        
+                        //return to the client
+                        $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                        
+                        $this->response = array(
+                            "response" => array(
+                                "responseCode" => $this->code,
+                                "responseMessage" => $this->message
+                            ),
+                            "data" => array(
+                                "INVID" => "",
+                                "INVNO" => "",
+                                "ISSUEDT" => "",
+                                "FDN" => "",
+                                "QRCODE" => "",
+                                "REFERENCE" => ""
+                            )
+                        );
+                        
+                        $len = sizeof($this->response);
+                        header ("CONTENT-LENGTH:".$len);
+                        //print $this->response;
+                        die(json_encode($this->response));
+                        return;
+                    }
+                    
+                    $creditnotedetails = array(
+                        'gooddetailgroupid' => NULL,
+                        'taxdetailgroupid' => NULL,
+                        'paymentdetailgroupid' => NULL,
+                        'erpcreditnoteid' => trim($json['VOUCHERNUMBER']),
+                        'erpcreditnoteno' => NULL,
+                        'erpinvoiceid' => trim($json['VOUCHERREF']),
+                        'erpinvoiceno' => NULL,
+                        'antifakecode' => NULL,
+                        'deviceno' => trim($devicedetails->deviceno),
+                        'issueddate' => date('Y-m-d'),
+                        'issuedtime' => date('Y-m-d H:i:s'),
+                        'operator' => trim($json['ERPUSER']),
+                        'currency' => $this->util->getcurrency(trim($json['CURRENCY'])),
+                        'oriinvoiceid' => $oriinvoiceid,
+                        'oriinvoiceno' => $oriinvoiceno,
+                        'invoicetype' => "1",
+                        'invoicekind' => ($this->vatRegistered == 'Y')? "1" : "2",
+                        'datasource' => $this->appsettings['WESERVICEDS'],
+                        'invoiceindustrycode' => trim($json['INDUSTRYCODE'])? trim($json['INDUSTRYCODE']) : "101",
+                        'einvoiceid' => NULL,
+                        'einvoicenumber' => NULL,
+                        'einvoicedatamatrixcode' => NULL,
+                        'isbatch' => '0',
+                        'netamount' => NULL,
+                        'taxamount' => NULL,
+                        'grossamount' => NULL,
+                        'origrossamount' => NULL,
+                        'itemcount' => NULL,
+                        'modecode' => '1',/*default-online*/
+                        'modename' => NULL,
+                        'remarks' => NULL,
+                        'buyerid' => NULL,
+                        'sellerid' => $this->appsettings['SELLER_RECORD_ID'],
+                        'issueddatepdf' => date('Y-m-d H:i:s'),
+                        'grossamountword' => NULL,
+                        'isinvalid' => 0,
+                        'isrefund' => 0,
+                        'vchtype' => trim($json['VOUCHERTYPE']),
+                        'vchtypename' => trim($json['VOUCHERTYPENAME']),
+                        'reasoncode' => $reasoncode,
+                        'reason' => $reason,
+                        'referenceno' => NULL,
+                        'approvestatus' => NULL,
+                        'creditnoteapplicationid' => NULL,
+                        'refundinvoiceno' => NULL,
+                        'applicationtime' => date('Y-m-d H:i:s'),
+                        'invoiceapplycategorycode' => '101', /*101-Credit Note*/
+                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                        'vatProjectId' => trim($json['PROJECTID']),
+                        'vatProjectName' => trim($json['PROJECTNAME']),
+                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE']))
+                    );
+                    
+                    $buyer = array(
+                        'tin' => trim($json['BUYERTIN']),
+                        'ninbrn' => trim($json['BUYERNINBRN']),
+                        'PassportNum' => trim($json['BUYERPASSPORTNUM']),
+                        'legalname' => trim($json['BUYERLEGALNAME']),
+                        'businessname' => trim($json['BUSINESSNAME']),
+                        'address' => trim($json['BUYERADDRESS']),
+                        'mobilephone' => trim($json['MOBILEPHONE']),
+                        'linephone' => trim($json['BUYERLINEPHONE']),
+                        'emailaddress' => trim($json['BUYEREMAIL']),
+                        'placeofbusiness' => trim($json['BUYERPLACEOFBUSI']),
+                        'type' => trim($json['BUYERTYPE']),
+                        'citizineship' => trim($json['BUYERCITIZENSHIP']),
+                        'sector' => trim($json['BUYERSECTOR']),
+                        'referenceno' => trim($json['BUYERREFERENCENO']),
+                        'datasource' => $this->appsettings['WESERVICEDS'],
+                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                        'vatProjectId' => trim($json['PROJECTID']),
+                        'vatProjectName' => trim($json['PROJECTNAME']),
+                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE']))
+                    );
+                    
+                    
+                    /**
+                     * @desc Validate TIN number, if supplied.
+                     * @author francis.lubanga@gmail.com
+                     * @date 2022-06-16
+                     *
+                     */
+                    
+                    if (trim($json['BUYERTIN']) == '' || empty($json['BUYERTIN'])) {
+                        $this->logger->write("Api : uploadcreditnote() : The buyer TIN was not provided!", 'r');
+                        
+                    } else {
+                        $v_data = $this->util->querytaxpayer($this->userid_u, trim($json['BUYERTIN']));//will return JSON.
+                        $v_data = json_decode($v_data, true);
+                        
+                        if (isset($v_data['taxpayer'])){
+                            $this->logger->write("Api : uploadcreditnote() : The buyer TIN was validated successfully!", 'r');
+                            
+                            $buyer['ninbrn'] = $v_data['taxpayer']['ninBrn'];
+                            $buyer['legalname'] = $v_data['taxpayer']['legalName'];
+                            $buyer['businessname'] = $v_data['taxpayer']['businessName'];
+                            $buyer['mobilephone'] = $v_data['taxpayer']['contactNumber'];
+                            $buyer['emailaddress'] = $v_data['taxpayer']['contactEmail'];
+                            $buyer['address'] = $v_data['taxpayer']['address'];
+                            
+                        }
+                    }
+                    
+                    $goods = array();
+                    $taxes = array();
+                    $payments = array();
+                    
+                    $deemedflag = 'NO';
+                    $discountflag = 'NO';
+                    
+                    $pricevatinclusive = empty(trim($json['PRICEVATINCLUSIVE']))? 'NO' : strtoupper(trim($json['PRICEVATINCLUSIVE']));//No
+                    
+                    $netamount = 0;
+                    $taxamount = 0;
+                    $grossamount = 0;
+                    $itemcount = 0;
+                    
+                    $tr = new taxrates($this->db);
+                    $taxid = NULL;
+                    $taxcode = NULL;
+                    $taxname = NULL;
+                    $taxcategory = NULL;
+                    $taxdisplaycategory = NULL;
+                    $taxdescription = NULL;
+                    $rate = 0;
+                    $qty = 0;
+                    $unit = 0;
+                    $discountpct = 0;
+                    $total = 0;
+                    $discount = 0;
+                    $gross = 0;
+                    $discount = 0;
+                    $tax = 0;
+                    $net = 0;
+                    $amount = 0;
+                    $erpTaxRate = 0;
+                    $product = new products($this->db);
+                    $measureunit = new measureunits($this->db);
+                    
+                    /**
+                     * Author: francis.lubanga@gmail.com
+                     * Date: 2024-05-20
+                     * Description: Handle fees/taxes which have no rates, and are passed as invoice line items
+                     */
+                    $mapped_fees = array();
+                    
+                    /**
+                     * Author: francis.lubanga@gmail.com
+                     * Date: 2026-01-10
+                     * Description: We wil hold excise duty related details here.
+                     */
+                    $exciseduty_details = array();
+                    
+                    if(trim($this->appsettings['CHECK_FEE_MAP_FLAG']) == '1'){
+                        $this->logger->write("Utilities : uploadcreditnote() : The check fees mapping is on", 'r');
+                        
+                        $feesmapping = new feesmapping($this->db);
+                        $feesmappings = $feesmapping->all();
+                        
+                        foreach ($feesmappings as $f_obj) {
+                            $this->logger->write("Utilities : uploadcreditnote() : The fee code is " . $f_obj['feecode'], 'r');
+                            $this->logger->write("Utilities : uploadcreditnote() : The product code is " . $f_obj['productcode'], 'r');
+                            
+                            $mapped_fees[] = array(
+                                'id' => empty($f_obj['id'])? '' : $f_obj['id'],
+                                'feecode' => empty($f_obj['feecode'])? '' : $f_obj['feecode'],
+                                'productcode' => empty($f_obj['productcode'])? '' : strtoupper($f_obj['productcode']),
+                                'amount' => 0
+                            );
+                        }
+                    }
+                    
+                    
+                    if (isset($json['INVENTORIES'])) {
+                        foreach ($json['INVENTORIES'] as $obj){
+                            $this->logger->write("Api : uploadcreditnote() : The PRODUCTCODE is " . $obj['PRODUCTCODE'], 'r');
+                            
+                            $ii = 0;
+                            $product_skip_flag = 0;
+                            
+                            foreach ($mapped_fees as $m_obj) {
+                                if(strtoupper(trim($m_obj['productcode'])) == strtoupper(trim($obj['PRODUCTCODE']))){
+                                    $this->logger->write("Api : uploadcreditnote() : The product " . $obj['PRODUCTCODE'] . " is mapped to a tax/fee " . $m_obj['feecode'], 'r');
+                                    
+                                    $f_qty = trim($obj['QTY']);
+                                    $f_unit = trim($obj['RATE']);
+                                    
+                                    # $mapped_fees[$ii]['amount'] = ($f_qty * $f_unit); # Might be problematic. Consider "foreach ($mapped_fees as &$m_obj) {"
+                                    /**
+                                     * Author: francis.lubanga@gmail.com
+                                     * Date: 2024-05-30
+                                     * Description: Resolve cases where an invoice has the same product code more than once. The last instance of the product code overwrites the other instances
+                                     */
+                                    $this->logger->write("Api : uploadinvoice() : The previous amount on this product is " . $m_obj['amount'], 'r');
+                                    $mapped_fees[$ii]['amount'] = $m_obj['amount'] + ($f_qty * $f_unit);
+                                    $product_skip_flag = 1;
+                                    break;
+                                }
+                                
+                                $ii = $ii + 1;
+                            }
+                            
+                            if ($product_skip_flag == 1){
+                                continue;
+                            }
+                            
+                            $product->getByErpCode(strtoupper(trim($obj['PRODUCTCODE'])));
+                            $measureunit->getByCode($product->measureunit);
+                            
+                            $qty = trim($obj['QTY']);
+                            $unit = trim($obj['RATE']);
+                            $amount = trim($obj['AMOUNT']);
+                            $erpTaxRate = empty(trim($obj['TAXRATE']))? 0 : trim($obj['TAXRATE']);
+                            $discount = empty(trim($obj['DISCOUNT']))? 0 : (float)trim($obj['DISCOUNT']);
+                            $discountpct = empty(trim($obj['DISCOUNTPCT']))? 0 : (float)trim($obj['DISCOUNTPCT']);
+                            $lineDiscountFlag = '';
+                            if (isset($obj['DISCOUNTFLAG'])) {
+                                $lineDiscountFlag = strtoupper(trim((string)$obj['DISCOUNTFLAG']));
+                            } elseif (isset($obj['discountflag'])) {
+                                $lineDiscountFlag = strtoupper(trim((string)$obj['discountflag']));
+                            }
+
+                            if (in_array($lineDiscountFlag, array('1', 'YES', 'Y', 'TRUE'), true)) {
+                                $lineDiscountFlag = '1';
+                            } elseif (in_array($lineDiscountFlag, array('2', '0', 'NO', 'N', 'FALSE'), true)) {
+                                $lineDiscountFlag = '2';
+                            } else {
+                                $lineDiscountFlag = '';
+                            }
+
+                            // Maintainer note (2026-04-14): enforce explicit discount semantics.
+                            // When a line carries discount amount/percentage, ERP must send DISCOUNTFLAG too.
+                            // Maintainer note (2026-04-17): DISCOUNTPCT is a decimal fraction (0.25 = 25%).
+                            // For DISCOUNTFLAG=1, both DISCOUNT and DISCOUNTPCT must be non-empty and > 0.
+                            $discountRaw = isset($obj['DISCOUNT']) ? trim((string)$obj['DISCOUNT']) : '';
+                            $discountPctRaw = isset($obj['DISCOUNTPCT']) ? trim((string)$obj['DISCOUNTPCT']) : '';
+                            $discountAmountValue = ($discountRaw !== '') ? (float)$this->util->removecommasfromamount($discountRaw) : 0;
+                            $discountPctValue = ($discountPctRaw !== '') ? (float)$this->util->removecommasfromamount($discountPctRaw) : 0;
+                            $hasLineDiscount = ($discountAmountValue > 0 || $discountPctValue > 0);
+
+                            if ($discountPctRaw !== '' && $discountPctValue > 1) {
+                                $this->logger->write("Api : uploadcreditnote() : DISCOUNTPCT must be a decimal fraction for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has invalid DISCOUNTPCT. Send a decimal fraction (e.g. 0.25 for 25%).";
+                                $this->code = '-999';
+
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+
+                                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a creditnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                                $this->response = array(
+                                    "response" => array(
+                                        "responseCode" => $this->code,
+                                        "responseMessage" => $this->message
+                                    ),
+                                    "data" => array(
+                                        "INVID" => "",
+                                        "INVNO" => "",
+                                        "ISSUEDT" => "",
+                                        "FDN" => "",
+                                        "QRCODE" => "",
+                                        "REFERENCE" => ""
+                                    )
+                                );
+
+                                $len = sizeof($this->response);
+                                header ("CONTENT-LENGTH:".$len);
+                                die(json_encode($this->response));
+                                return;
+                            }
+
+                            // Maintainer note (2026-04-14): fail fast to avoid implicit flag inference.
+                            if ($hasLineDiscount && $lineDiscountFlag == '') {
+                                $this->logger->write("Api : uploadcreditnote() : DISCOUNTFLAG is required when DISCOUNT or DISCOUNTPCT is populated for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has DISCOUNT/DISCOUNTPCT but no valid DISCOUNTFLAG. Expected 1 or 2.";
+                                $this->code = '-999';
+
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+
+                                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a creditnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                                $this->response = array(
+                                    "response" => array(
+                                        "responseCode" => $this->code,
+                                        "responseMessage" => $this->message
+                                    ),
+                                    "data" => array(
+                                        "INVID" => "",
+                                        "INVNO" => "",
+                                        "ISSUEDT" => "",
+                                        "FDN" => "",
+                                        "QRCODE" => "",
+                                        "REFERENCE" => ""
+                                    )
+                                );
+
+                                $len = sizeof($this->response);
+                                header ("CONTENT-LENGTH:".$len);
+                                die(json_encode($this->response));
+                                return;
+                            }
+
+                            if ($lineDiscountFlag == '1' && ($discountAmountValue <= 0 || $discountPctValue <= 0)) {
+                                $this->logger->write("Api : uploadcreditnote() : DISCOUNT and DISCOUNTPCT are mandatory and must be > 0 when DISCOUNTFLAG=1 for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has DISCOUNTFLAG=1 but DISCOUNT and DISCOUNTPCT are missing/zero.";
+                                $this->code = '-999';
+
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+
+                                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a creditnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                                $this->response = array(
+                                    "response" => array(
+                                        "responseCode" => $this->code,
+                                        "responseMessage" => $this->message
+                                    ),
+                                    "data" => array(
+                                        "INVID" => "",
+                                        "INVNO" => "",
+                                        "ISSUEDT" => "",
+                                        "FDN" => "",
+                                        "QRCODE" => "",
+                                        "REFERENCE" => ""
+                                    )
+                                );
+
+                                $len = sizeof($this->response);
+                                header ("CONTENT-LENGTH:".$len);
+                                die(json_encode($this->response));
+                                return;
+                            }
+                            // $taxcode = $obj['TAXCODE'];
+                            $taxcode = $obj['TAXCODE'];
+                            //$tr->getByID($taxcode);
+                            $tr->getByErpCode($taxcode);
+                            $taxid = $tr->id;
+                            
+                            /**
+                             * Can we determine the DISCOUNT PERCENTAGE incase it is a line DISCOUNT provided?
+                             */
+                            if ($lineDiscountFlag == '1') {
+                                $discountpct = $discountPctValue;
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
+                            } elseif ($discountpct == 0 && $discount > 0 && (float)$amount > 0) {
+                                $discountpct = $discount/$amount;
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
+                            } else {
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
+                            }
+                            
+                            if (trim($taxcode) == '' || empty($taxcode)) {
+                                $this->logger->write("Api : uploadcreditnote() : The PRODUCTCODE " . $obj['PRODUCTCODE'] . " does not have a TAXCODE", 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " does not have a TAXCODE!";
+                                $this->code = '-999';
+                                //break;//exit loop
+                                
+                                //return to the client
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                
+                                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a creditnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                                
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                                
+                                $this->response = array(
+                                    "response" => array(
+                                        "responseCode" => $this->code,
+                                        "responseMessage" => $this->message
+                                    ),
+                                    "data" => array(
+                                        "INVID" => "",
+                                        "INVNO" => "",
+                                        "ISSUEDT" => "",
+                                        "FDN" => "",
+                                        "QRCODE" => "",
+                                        "REFERENCE" => ""
+                                    )
+                                );
+                                
+                                $len = sizeof($this->response);
+                                header ("CONTENT-LENGTH:".$len);
+                                //print $this->response;
+                                die(json_encode($this->response));
+                                return;
+                            } else {
+                                
+                                if (trim($taxid) == '' || empty($taxid)) {
+                                    $this->logger->write("Api : uploadcreditnote() : The TAXCODE on PRODUCTCODE " . $obj['PRODUCTCODE'] . " is not defined", 'r');
+                                    $this->message = "The TAXCODE on PRODUCTCODE " . $obj['PRODUCTCODE'] . " is not defined!";
+                                    $this->code = '-999';
+                                    //break;//exit loop
+                                    
+                                    //return to the client
+                                    $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                    
+                                    $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a creditnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                                    
+                                    $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                                    
+                                    $this->response = array(
+                                        "response" => array(
+                                            "responseCode" => $this->code,
+                                            "responseMessage" => $this->message
+                                        ),
+                                        "data" => array(
+                                            "INVID" => "",
+                                            "INVNO" => "",
+                                            "ISSUEDT" => "",
+                                            "FDN" => "",
+                                            "QRCODE" => "",
+                                            "REFERENCE" => ""
+                                        )
+                                    );
+                                    
+                                    $len = sizeof($this->response);
+                                    header ("CONTENT-LENGTH:".$len);
+                                    //print $this->response;
+                                    die(json_encode($this->response));
+                                    return;
+                                } else {
+                                    if ($taxid == $this->appsettings['DEEMEDTAXRATE']) {
+                                        $deemedflag = 'YES';
+                                    } else {
+                                        $deemedflag = 'NO';
+                                    }
+
+                                    /**
+                                     * Date: 2025-06-27
+                                     * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                     * Description: Hard code the tax rate for Commodity Category Code 96010102
+                                    */
+                                    if (trim($product->commoditycategorycode) == '96010102') {
+                                        $this->logger->write("Api : uploadcreditnote() : The product code is 96010102. Hard coding the tax id to 13", 'r');
+                                        $taxid = '13'; // 13 is the tax id for VAT OUT OF SCOPE
+                                    }  
+                                    
+                                    $this->logger->write("Api : uploadcreditnote() : The final TAXID is " . $taxid, 'r');
+                                    
+                                    /**
+                                     * Date: 2026-01-11
+                                     * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                     * Description: Check for export & export service
+                                     */
+                                    //if (str_contains(strtolower($json['BUYERPLACEOFBUSI']), "uganda")) {
+                                    if (stripos(strtolower($json['BUYERPLACEOFBUSI']), "uganda") !== false) {
+                                        $this->logger->write("Api : uploadcreditnote() : This is a local invoice" , 'r');
+                                        
+                                        /**
+                                         * Date: 2026-01-09
+                                         * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                         * Description: Implement excise duty
+                                         */
+                                        
+                                        if (strlen(trim($product->exciseDutyCode)) != 0 && trim($product->exciseDutyCode) != 'NULL' && trim($product->hasexcisetax) == '101') {
+                                            $this->logger->write("Api : uploadcreditnote() : The product has excise duty", 'r');
+                                            
+                                            $exciseduty_details[] = $this->util->computeExciseDuty($this->userid_u, $product->code, $qty, $unit, $amount, $discount, $discountpct);
+                                            
+                                            $this->logger->write("Api : uploadcreditnote() : The excise duty count: " . sizeof($exciseduty_details), 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : exciseduty_details = " . json_encode($exciseduty_details), 'r');
+                                            
+                                            $this->logger->write("Api : uploadcreditnote() : itemCode = " . $exciseduty_details[0][0]['itemCode'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : exciseFlag = " . $exciseduty_details[0][0]['exciseFlag'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : categoryId = " . $exciseduty_details[0][0]['categoryId'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : categoryName = " . $exciseduty_details[0][0]['categoryName'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : exciseRate = " . $exciseduty_details[0][0]['exciseRate'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : exciseRule = " . $exciseduty_details[0][0]['exciseRule'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : exciseTax = " . $exciseduty_details[0][0]['exciseTax'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : pack = " . $exciseduty_details[0][0]['pack'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : stick = " . $exciseduty_details[0][0]['stick'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : exciseUnit = " . $exciseduty_details[0][0]['exciseUnit'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : exciseCurrency = " . $exciseduty_details[0][0]['exciseCurrency'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : exciseRateName = " . $exciseduty_details[0][0]['exciseRateName'], 'r');
+                                            
+                                            // Adjust the amount from the ERP accordingly
+                                            $unit = (float)$unit + ((float)$exciseduty_details[0][0]['exciseTax'])/$qty;
+                                        } else {
+                                            $this->logger->write("Api : uploadcreditnote() : The product has NO excise duty", 'r');
+                                        }
+                                    } else {
+                                        $this->logger->write("Api : uploadcreditnote() : The place of business is " . $json['BUYERPLACEOFBUSI'], 'r');
+                                        
+                                        
+                                        if(strtoupper(trim($json['NONRESIDENTFLAG'])) == '1'){
+                                            $this->logger->write("Api : uploadcreditnote() : The buyer is Non-Resident", 'r');
+                                            
+                                            if(trim($json['INDUSTRYCODE']) == '112'){
+                                                $this->logger->write("Api : uploadcreditnote() : This is an export service", 'r');
+                                                $taxid = '2'; // B: Zero (0%)
+                                                
+                                                $tr->getByID($taxid);
+                                            } elseif(trim($json['INDUSTRYCODE']) == '102'){
+                                                $this->logger->write("Api : uploadcreditnote() : This is an export", 'r');
+                                                $taxid = '2'; // B: Zero (0%)
+                                                
+                                                $tr->getByID($taxid);
+                                            }
+                                            
+                                            
+                                        } else {
+                                            $this->logger->write("Api : uploadcreditnote() : The buyer is a Resident", 'r');
+                                            
+                                            if (strlen(trim($product->exciseDutyCode)) != 0 && trim($product->exciseDutyCode) != 'NULL' && trim($product->hasexcisetax) == '101') {
+                                                $this->logger->write("Api : uploadcreditnote() : The product has excise duty", 'r');
+                                                
+                                                $exciseduty_details[] = $this->util->computeExciseDuty($this->userid_u, $product->code, $qty, $unit, $amount, $discount, $discountpct);
+                                                
+                                                $this->logger->write("Api : uploadcreditnote() : The excise duty count: " . sizeof($exciseduty_details), 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : exciseduty_details = " . json_encode($exciseduty_details), 'r');
+                                                
+                                                $this->logger->write("Api : uploadcreditnote() : itemCode = " . $exciseduty_details[0][0]['itemCode'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : exciseFlag = " . $exciseduty_details[0][0]['exciseFlag'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : categoryId = " . $exciseduty_details[0][0]['categoryId'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : categoryName = " . $exciseduty_details[0][0]['categoryName'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : exciseRate = " . $exciseduty_details[0][0]['exciseRate'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : exciseRule = " . $exciseduty_details[0][0]['exciseRule'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : exciseTax = " . $exciseduty_details[0][0]['exciseTax'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : pack = " . $exciseduty_details[0][0]['pack'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : stick = " . $exciseduty_details[0][0]['stick'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : exciseUnit = " . $exciseduty_details[0][0]['exciseUnit'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : exciseCurrency = " . $exciseduty_details[0][0]['exciseCurrency'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : exciseRateName = " . $exciseduty_details[0][0]['exciseRateName'], 'r');
+                                                
+                                                // Adjust the amount from the ERP accordingly
+                                                $unit = (float)$unit + ((float)$exciseduty_details[0][0]['exciseTax'])/$qty;
+                                            } else {
+                                                $this->logger->write("Api : uploadcreditnote() : The product has NO excise duty", 'r');
+                                            }
+                                        }
+                                    }
+                                    
+                                    $taxname = $tr->name;
+                                    // $taxcategory = $tr->category;
+                                    $taxcategory = $tr->description;
+                                    $taxdisplaycategory = $tr->displayCategoryCode;
+                                    $taxdescription = $tr->description;
+                                    $rate = $tr->rate? $tr->rate : $erpTaxRate;
+                                    
+                                    if ($pricevatinclusive == 'NO') {
+                                        $this->logger->write("Api : uploadcreditnote() : The price is tax exclusive!", 'r');
+                                        
+                                        /**
+                                         * Recalculate TAX here
+                                         */
+                                        
+                                        //Manually calculate figures
+                                        $this->logger->write("Api : uploadcreditnote() : Manually calculating tax", 'r');
+                                        
+                                        if ($rate > 0) {
+                                            $unit = $unit * ($rate + 1);
+                                        }
+                                        
+                                        $total = ($qty * $unit);//??
+                                        
+                                        $discount = $discountpct * $total;
+                                        
+                                        /**
+                                         * Modification Date: 2021-01-26
+                                         * Description: Resolving error code 2776 - goodsDetails-->tax: Tax calculation error!Collection index:0
+                                         * */
+                                        //$gross = $total - $discount;
+                                        $gross = $total;
+                                        
+                                        $discount = (-1) * $discount;
+                                        
+                                        $tax = ($gross/($rate + 1)) * $rate; //??
+                                        
+                                        $net = $gross - $tax;
+                                    } else {
+                                        $this->logger->write("Api : uploadcreditnote() : The price is tax inclusive!", 'r');
+                                        
+                                        /**
+                                         * Use the figures as they come from the ERP
+                                         */
+                                        $total = ($qty * $unit);
+                                        
+                                        $discount = $discountpct * $total;
+                                        
+                                        /**
+                                         * Modification Date: 2021-01-26
+                                         * Description: Resolving error code 2776 - goodsDetails-->tax: Tax calculation error!Collection index:0
+                                         * */
+                                        //$gross = $total - $discount;
+                                        $gross = $total;
+                                        
+                                        $discount = (-1) * $discount;
+                                        
+                                        $tax = ($gross/($rate + 1)) * $rate; //??
+                                        
+                                        $net = $gross - $tax;
+                                    }
+                                    
+                                    /**
+                                     * Over-ride tax, if the tax payer is not VAT registered
+                                     */
+                                    if ($this->vatRegistered == 'N') {
+                                        $tax = 0;
+                                        $taxcategory = NULL;
+                                        $taxcode = NULL;
+                                    }
+                                    
+                                    
+                                    
+                                    $netamount = $netamount + $net;
+                                    $taxamount = $taxamount + $tax;
+                                    
+                                    $grossamount = $grossamount + $gross;
+                                    $itemcount = $itemcount + 1;
+                                    
+                                    if ($lineDiscountFlag == '1') {
+                                        $discountflag = 'YES';
+                                    } elseif ($lineDiscountFlag == '2') {
+                                        $discountflag = 'NO';
+                                    } elseif ($discount == 0) {
+                                        $discountflag = 'NO';
+                                    } else {
+                                        $discountflag = 'YES';
+                                    }
+
+                                    $effectiveDiscountFlag = trim($discountflag) == 'NO'? '2' : '1';
+                                    
+                                    /**
+                                     * Author: francis.lubanga@gmail.com
+                                     * Modification Date: 2021-02-28
+                                     * Description: Resolving EFRIS error code 1427 - goodsDetails-->item:Must be the same as the original invoice!Collection index:0
+                                     */
+                                    
+                                    /*Reset the order number*/
+                                    $ordernumber = NULL;
+                                    
+                                    try {
+                                        $gIndex = 0;
+                                        $o_data = array ();
+                                        $r = $this->db->exec(array('SELECT g.ordernumber "ordernumber" FROM tblgooddetails g JOIN tblinvoices i ON i.gooddetailgroupid = g.groupid AND i.einvoicenumber = "' . $oriinvoiceno . '" WHERE TRIM(g.itemcode) = "' . strtoupper(trim($obj['PRODUCTCODE'])) . '" ORDER BY g.id ASC'));
+                                        $this->logger->write($this->db->log(TRUE), 'r');
+                                        
+                                        foreach ( $r as $set ) {
+                                            $gIndex = $gIndex + 1;
+                                            $o_data [] = $set;
+                                        }
+                                        
+                                        /**
+                                         * Author: francis.lubanga@gmail.com
+                                         * Modification Date: 2022-07-22
+                                         * Description: Resolving EFRIS error code 1423 - goodsDetails-->orderNumber:Must be in ascending order!Collection index:8
+                                         *              This usually happens when a product is listed more than one on the same creditnote.
+                                         */
+                                        
+                                        $ordernumber = $o_data[0]['ordernumber'];
+                                        $this->logger->write("Api : uploadcreditnote() : The order number for product " . trim($obj['PRODUCTCODE']) . " is: " . $ordernumber, 'r');
+                                        $this->logger->write("Api : uploadcreditnote() : The size of the o_data array for product " . trim($obj['PRODUCTCODE']) . " is: " . strval(sizeof($o_data)), 'r');
+                                    } catch (Exception $e) {
+                                        $this->logger->write("Api : uploadcreditnote() : The operation to retrieve the order number was not successful. The error messages is " . $e->getMessage(), 'r');
+                                    }
+                                    
+                                    $goods[] = array(
+                                        'groupid' => NULL,
+                                        'item' => $product->name,
+                                        'itemcode' => strtoupper(trim($obj['PRODUCTCODE'])),
+                                        'qty' => $qty,
+                                        'unitofmeasure' => $product->measureunit,
+                                        'unitprice' => $unit,
+                                        'total' => $total,
+                                        'taxid' => $taxid,
+                                        'taxrate' => $rate,
+                                        'tax' => $tax,
+                                        'discounttotal' => $discount,
+                                        'discounttaxrate' => $rate,
+                                        'discountpercentage' => $discountpct,
+                                        'ordernumber' => NULL,/*empty($ordernumber)? NULL : $ordernumber, : Commenting this out for now due to EFRIS error 1423. RRQ places the same item more than once on the same invoice. This causes error 1423. The bright light is that RRQ voids the entire invoice*/
+                                        'discountflag' => $effectiveDiscountFlag,
+                                        'deemedflag' => (strtoupper(trim($deemedflag)) == 'NO'? '2' : '1'),
+                                        'exciseflag' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseFlag'] : NULL,
+                                        'categoryid' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['categoryId'] : NULL,
+                                        'categoryname' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['categoryName'] : NULL,
+                                        'goodscategoryid' => $product->commoditycategorycode,
+                                        'goodscategoryname' => NULL,
+                                        'exciserate' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRate'] : NULL,
+                                        'exciserule' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRule'] : NULL,
+                                        'excisetax' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseTax'] : NULL,
+                                        'pack' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['pack'] : NULL,
+                                        'stick' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['stick'] : NULL,
+                                        'exciseunit' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseUnit'] : NULL,
+                                        'excisecurrency' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseCurrency'] : NULL,
+                                        'exciseratename' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRateName'] : NULL,
+                                        'taxdisplaycategory' => $taxdisplaycategory,
+                                        'taxcategory' => $taxcategory,
+                                        'taxcategoryCode' => $tr->code,
+                                        'unitofmeasurename' => $measureunit->name,
+                                        'pieceMeasureUnit' => $product->piecemeasureunit,
+                                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                                        'vatProjectId' => trim($json['PROJECTID']),
+                                        'vatProjectName' => trim($json['PROJECTNAME']),
+                                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE']))
+                                    );
+                                    
+                                    
+                                    
+                                    if ($this->vatRegistered == 'Y') {
+                                        $taxes[] = array(
+                                            'discountflag' => $effectiveDiscountFlag,
+                                            'discounttotal' => $discount,
+                                            'discounttaxrate' => $rate,
+                                            'discountpercentage' => $discountpct,
+                                            'd_netamount' => NULL,
+                                            'd_taxamount' => NULL,
+                                            'd_grossamount' => NULL,
+                                            'groupid' => NULL,
+                                            'goodid' => NULL,
+                                            'taxdisplaycategory' => $taxdisplaycategory,
+                                            'taxcategory' => $taxcategory,
+                                            'taxcategoryCode' => $tr->code,
+                                            'netamount' => $net,
+                                            'taxrate' => $rate,
+                                            'taxamount' => $tax,
+                                            'grossamount' => $gross,
+                                            'exciseunit' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseUnit'] : NULL,
+                                            'excisecurrency' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseCurrency'] : NULL,
+                                            'taxratename' => $taxname,
+                                            'taxdescription' => $taxdescription
+                                        );
+                                        
+                                        /**
+                                         * Date: 2026-01-10
+                                         * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                         * Description: Add an excise duty tax block to the tax array
+                                         */
+                                        if(sizeof($exciseduty_details) == 1){
+                                            $taxes[] = array(
+                                                'discountflag' => $effectiveDiscountFlag,
+                                                'discounttotal' => $discount,
+                                                'discounttaxrate' => $rate,
+                                                'discountpercentage' => $discountpct,
+                                                'd_netamount' => NULL,
+                                                'd_taxamount' => NULL,
+                                                'd_grossamount' => NULL,
+                                                'groupid' => NULL,
+                                                'goodid' => NULL,
+                                                'taxdisplaycategory' => $taxdisplaycategory,
+                                                'taxcategory' => "E: Excise Duty",
+                                                'taxcategoryCode' => "05",
+                                                'netamount' => sizeof($exciseduty_details) == 1? ((float)$net - (float)$exciseduty_details[0][0]['exciseTax']) : 0,
+                                                'taxrate' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRate'] : NULL,
+                                                'taxamount' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseTax'] : 0,
+                                                'grossamount' => $net, //It appears like the NET from the main tax above, serves as the GROSS for excise
+                                                'exciseunit' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseUnit'] : NULL,
+                                                'excisecurrency' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseCurrency'] : NULL,
+                                                'taxratename' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRateName'] : NULL,
+                                                'taxdescription' => "E"
+                                            );
+                                        }
+                                    }
+                                }
+                                
+                            }
+                        }//END OF FOREACH
+                        
+                        //***Proceed with INVOICE logic here****//
+                        
+                        if (sizeof($goods) > 0) {
+                            foreach ($mapped_fees as $m_obj) {
+                                $this->logger->write("Api : uploadcreditnote() : Adding fees to the tax array", 'r');
+                                
+                                $tr = new taxrates($this->db);
+                                $tr->getByCode($m_obj['feecode']);
+                                $taxcode = $tr->code;
+                                $taxname = $tr->name;
+                                $taxcategory = $tr->category;
+                                $taxdescription = $tr->description;
+                                $taxdisplaycategory = $tr->displayCategoryCode;
+                                
+                                if((float)$m_obj['amount'] <> 0){
+                                    $taxes[] = array(
+                                        'discountflag' => '1',
+                                        'discounttotal' => NULL,
+                                        'discounttaxrate' => NULL,
+                                        'discountpercentage' => NULL,
+                                        'd_netamount' => NULL,
+                                        'd_taxamount' => NULL,
+                                        'd_grossamount' => NULL,
+                                        'groupid' => NULL,
+                                        'goodid' => NULL,
+                                        'taxdisplaycategory' => $taxdisplaycategory,
+                                        'taxcategory' => $taxcategory,
+                                        'taxcategoryCode' => $taxcode,
+                                        'netamount' => 0,
+                                        'taxrate' => $m_obj['amount'],
+                                        'taxamount' => $m_obj['amount'],
+                                        'grossamount' => $m_obj['amount'],
+                                        'exciseunit' => NULL,
+                                        'excisecurrency' => NULL,
+                                        'taxratename' => $taxname,
+                                        'taxdescription' => $taxdescription
+                                    );
+                                }
+                                else {
+                                    continue;
+                                }
+                            }
+                            
+                            $this->logger->write("Api : uploadcreditnote() : The GOODS count: " . sizeof($goods), 'r');
+                            $this->logger->write("Api : uploadcreditnote() : The TAX count: " . sizeof($taxes), 'r');
+                            $this->logger->write("Api : uploadcreditnote() : The PAYMENTS count: " . sizeof($payments), 'r');
+                            
+                            $data = $this->util->uploadcreditnote($this->userid_u, $buyer, $creditnotedetails, $goods, $payments, $taxes);
+                            $data = json_decode($data, true);
+                            
+                            if (isset($data['returnCode'])){
+                                $this->logger->write("Api : uploadcreditnote() : The operation to upload the credit note not successful. The error message is " . $data['returnMessage'], 'r');
+                                $this->message = $data['returnMessage'];
+                                $this->code = $data['returnCode'];
+                                
+                                /**
+                                 * If the credit note passed the duplicate check due to an error or incomplete parameters, but EFRIS determines that it is a duplicate invoice,
+                                 * We insert it into the database?
+                                 */
+                                
+                                //$body = $this->code . ' : ' . $this->message;
+                                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a creditnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                            } else {//{"referenceNo":"21PL010175571"}
+                                
+                                if (isset($data['referenceNo'])){
+                                    $ref = $data['referenceNo']; //21PL010073993
+                                    $creditnotedetails['referenceno'] = $data['referenceNo'];
+                                }
+                                
+                                $inv_status = $this->util->createcreditnote($creditnotedetails, $goods, $taxes, $buyer, $this->userid_u);
+                                
+                                if ($inv_status) {
+                                    $this->logger->write("Api : uploadcreditnote() : The credit note was created on eTW successfully", 'r');
+                                } else {
+                                    $this->logger->write("Api : uploadcreditnote() : The credit note was NOT created on eTW", 'r');
+                                }
+                                
+                                $this->message = 'The operation to upload the credit note was successful';
+                                $this->code = '00';
+                            }
+                        } else {
+                            
+                            $this->logger->write("Api : uploadcreditnote() : No goods details were supplied!", 'r');
+                            $this->message = "No goods details were supplied!";
+                            $this->code = '-999';
+                            
+                            //$body = $this->code . ' : ' . $this->message;
+                            $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a creditnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                            
+                        }
+                    } else {
+                        $this->logger->write("Api : uploadcreditnote() : No goods details were supplied!", 'r');
+                        $this->message = "No goods details were supplied!";
+                        $this->code = '-999';
+                        
+                        //$body = $this->code . ' : ' . $this->message;
+                        $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a creditnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    }
+                } else {
+                    $this->logger->write("Api : uploadcreditnote() : The credit note has already been uploaded into EFRIS", 'r');
+                    $this->message = 'The credit note has already been uploaded into EFRIS';
+                    $this->code = '99';
+                    
+                    /*START OF EFRIS C/N QUERY*/
+                    //Fetch details of the newly uploaded credit note
+                    $n_data = $this->util->downloadcreditnote($this->userid_u, $inv_check->referenceno);//will return JSON.
+                    //var_dump($data);
+                    
+                    $n_data = json_decode($n_data, true);
+                    //var_dump($n_data);
+                    
+                    
+                    if(isset($n_data['records'])){
+                        $antifakeCode = '';
+                        $invoiceNo = '';
+                        $issuedDate = date("Y-m-d", strtotime($inv_check->applicationtime));
+                        $issuedTime = date("Y-m-d H:i:s", strtotime($inv_check->applicationtime));
+                        $issuedDatePdf = date("Y-m-d H:i:s", strtotime($inv_check->applicationtime));
+                        $oriInvoiceId = '';
+                        $isInvalid = '';
+                        $isRefund = '';
+                        $grossAmount = 0;
+                        $itemCount = 0;
+                        $netAmount = 0;
+                        $qrCode = '';
+                        $taxAmount = 0;
+                        $modeCode = '';
+                        $modeName = '';
+                        $grossAmountWords = '';
+                        $oriGrossAmount = 0;
+                        $currencyRate = 1;
+                        
+                        foreach($n_data['records'] as $elem){
+                            
+                            $i_data = $this->util->downloadinvoice($this->userid_u, $elem['invoiceNo']);
+                            $i_data = json_decode($i_data, true);
+                            
+                            /*START OF INVOICE BLOCK*/
+                            if (isset($i_data['basicInformation'])){
+                                $antifakeCode = $i_data['basicInformation']['antifakeCode']; //32966911991799104051
+                                $invoiceId = $i_data['basicInformation']['invoiceId']; //3257429764295992735
+                                $invoiceNo = $i_data['basicInformation']['invoiceNo']; //3120012276043
+                                
+                                $issuedDate = $i_data['basicInformation']['issuedDate']; //18/09/2020 17:14:12
+                                $issuedDate = str_replace('/', '-', $issuedDate);//Replace / with -
+                                $issuedDate = date("Y-m-d H:i:s", strtotime($issuedDate));
+                                
+                                $issuedTime = $i_data['basicInformation']['issuedDate']; //18/09/2020 17:14:12
+                                $issuedTime = str_replace('/', '-', $issuedTime);//Replace / with -
+                                $issuedTime = date("Y-m-d H:i:s", strtotime($issuedTime));
+                                
+                                $issuedDatePdf = $i_data['basicInformation']['issuedDatePdf']; //318/09/2020 17:14:12
+                                $issuedDatePdf = str_replace('/', '-', $issuedDatePdf);//Replace / with -
+                                $issuedDatePdf = date("Y-m-d H:i:s", strtotime($issuedDatePdf));
+                                
+                                $oriInvoiceId = $i_data['basicInformation']['oriInvoiceId'];//1
+                                $isInvalid = $i_data['basicInformation']['isInvalid'];//1
+                                $isRefund = $i_data['basicInformation']['isRefund'];//1
+                                $currencyRate = $i_data['basicInformation']['currencyRate'];
+                                
+                                $invoiceid = $invoiceId;
+                                //$invoicenumber = $invoiceNo;
+                                $issueddate = $issuedDate;
+                                $fdn = $antifakeCode;
+                                
+                            }
+                            
+                            if (isset($i_data['summary'])){
+                                $grossAmount = $i_data['summary']['grossAmount']; //832000
+                                $itemCount = $i_data['summary']['itemCount']; //1
+                                $netAmount = $i_data['summary']['netAmount']; //705084.75
+                                $qrCode = $i_data['summary']['qrCode']; //020000001149IC1200122760430004F588000000C1A8450A20A021D534A1000121462A1000094968~MM INTERGRATED STEEL MILLS (UGANDA) LIMITED~Ediomu & Company~Kiboko Galv Corr. Sheet 36G
+                                $taxAmount = $i_data['summary']['taxAmount'];//126915.25
+                                $modeCode = $i_data['summary']['modeCode'];//0
+                                $oriGrossAmount = $i_data['summary']['oriGrossAmount'];//19556.48
+                                
+                                $mode = new modes($this->db);
+                                $mode->getByCode($modeCode);
+                                $modeName = $mode->name;//online
+                                
+                                $f = new \NumberFormatter("en", NumberFormatter::SPELLOUT);
+                                $grossAmountWords = $f->format($grossAmount);//two million,
+                                
+                                $qr = $qrCode;
+                                
+                            }
+                            /*END OF INVOICE BLOCK*/
+                            
+                            $refundInvoiceNo = $elem['invoiceNo'];
+                            $approveStatusCode = $elem['approveStatus'];
+                            $applicationTime = $elem['applicationTime']; //28/09/2020 00:43:29
+                            $referenceNo = $elem['referenceNo']; //21PL010073993
+                            $oriInvoiceNo = $elem['oriInvoiceNo']; //120014732476
+                            
+                            $applicationTime = str_replace('/', '-', $applicationTime);//Replace / with -
+                            $applicationTime = date("Y-m-d H:i:s", strtotime($applicationTime));
+                            
+                            $grossAmount = $elem['grossAmount'];
+                            $totalAmount = $elem['totalAmount'];
+                            //$refundIssuedDate = $elem['refundIssuedDate'];
+                            $refundIssuedDate = $applicationTime;//28-09-2020 00:43:29
+                            $appId = $elem['id'];
+                            
+                            try{
+                                $this->db->exec(array('UPDATE tblcreditnotes SET antifakecode = "' . $antifakeCode .
+                                    '", einvoiceid = "' . $invoiceId .
+                                    '", einvoicenumber = "' . $invoiceNo .
+                                    '", issueddate = "' . $issuedDate .
+                                    '", issuedtime = "' . $issuedTime .
+                                    '", issueddatepdf = "' . $issuedDatePdf .
+                                    '", oriinvoiceid = "' . $oriInvoiceId .
+                                    '", isinvalid = "' . $isInvalid .
+                                    '", isrefund = "' . $isRefund .
+                                    '", grossamount = ' . $grossAmount .
+                                    ', itemcount = ' . $itemCount .
+                                    ', netamount = ' . $netAmount .
+                                    ', einvoicedatamatrixcode = "' . $qrCode .
+                                    '", taxamount = ' . $taxAmount .
+                                    ', modecode = "' . $modeCode .
+                                    '", modename = "' . $modeName .
+                                    '", grossamountword = "' . $grossAmountWords .
+                                    '", origrossamount = ' . $oriGrossAmount .
+                                    ', refundinvoiceno = "' . $refundInvoiceNo .
+                                    '", approvestatus = "' . $approveStatusCode .
+                                    '", grossamount = "' . $grossAmount .
+                                    '", totalamount = "' . $totalAmount .
+                                    '", issueddate = "' . $refundIssuedDate .
+                                    '", issuedtime = "' . $refundIssuedDate .
+                                    '", creditnoteapplicationid = "' . $appId .
+                                    '", applicationtime = "' . $applicationTime .
+                                    '", currencyRate = ' . $currencyRate .
+                                    ', modifieddt = NOW(), modifiedby = ' . $this->userid .
+                                    ' WHERE referenceno = "' . $inv_check->referenceno . '"'));
+                                
+                                $this->logger->write($this->db->log(TRUE), 'r');
+                            } catch (Exception $e) {
+                                $this->logger->write("Api : uploadcreditnote() : Failed to update the table tblcreditnotes. The error message is " . $e->getMessage(), 'r');
+                            }
+                            
+                            if ($referenceNo = $inv_check->referenceno) {
+                                $invoicenumber = $oriInvoiceNo;
+                                $ref = $referenceNo;
+                                //$appstatus = $this->util->decodeapprovestatus($approveStatusCode);
+                            }
+                            
+                        }
+                        
+                        //$this->message = 'The credit note was retrived successfully';
+                        //$this->code = '000';
+                        
+                    } elseif (isset($n_data['returnCode'])){
+                        $this->logger->write("Api : uploadcreditnote() : The operation to download the credit note not successful. The error message is " . $n_data['returnMessage'], 'r');
+                        //$this->message = $n_data['returnMessage'];
+                        //$this->code = $n_data['returnCode'];
+                    } else {
+                        $this->logger->write("Api : uploadcreditnote() : The operation to download the credit note not successful.", 'r');
+                        //$this->message = 'The operation was not successful';
+                        //$this->code = '1005';
+                    }
+                    /*END OF EFRIS C/N QUERY*/
+                    
+                    $creditnoteid = empty($inv_check->einvoiceid)? $invoiceid : $inv_check->einvoiceid;
+                    $creditnotenumber = empty($inv_check->oriinvoiceno)? $invoicenumber : $inv_check->oriinvoiceno;
+                    $issueddate = empty($inv_check->issuedtime)? $issuedTime : $inv_check->issuedtime;
+                    $fdn = empty($inv_check->antifakecode)? $antifakeCode : $inv_check->antifakecode;
+                    $qr = empty($inv_check->einvoicedatamatrixcode)? $qrCode : $inv_check->einvoicedatamatrixcode;
+                    $ref = empty($inv_check->referenceno)? $ref : $inv_check->referenceno;
+                }
+            } else {
+                $this->logger->write("Api : uploadcreditnote() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+            
+            $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);            
+        }
+        
+        
+        
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array(
+                "INVID" => $creditnoteid,
+                "INVNO" => $creditnotenumber,
+                "ISSUEDT" => $issueddate,
+                "FDN" => $fdn,
+                "QRCODE" => $qr,
+                "REFERENCE" => $ref
+            )
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+    }	
+	
+	
+	/**
+     *	@name queryinvoice
+     *  @desc query invoice
+     *	@return string response
+     *	@param NULL
+     **/
+    function queryinvoice(){
+        $operation = NULL; //tblevents
+        $permission = 'DOWNLOADINVOICE'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        $invoiceid = '';
+        $invoicenumber = '';
+        $issueddate = '';
+        $fdn = '';
+        $qr = '';
+        $ref = '';
+        $appstatus = '';
+        $creditnotenumber = '';
+        $this->message = 'The operation was not successful';
+        $this->code = '1005';
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            $erpinvoiceid = trim($json['VOUCHERNUMBER']);
+            $erpinvoiceno = trim($json['VOUCHERREF']);
+            $vchtype = trim($json['VOUCHERTYPE']);
+            $vchtypename = trim($json['VOUCHERTYPENAME']);
+            
+            $this->logger->write("Api : queryinvoice() : The userid is: " . $this->userid_u, 'r');
+            $this->logger->write("Api : queryinvoice() : Checking permissions", 'r');
+            if ($this->userpermissions[$permission]) {
+                
+                
+                if ($vchtype == 'Credit Note') {
+                    $inv_check = new DB\SQL\Mapper($this->db, 'tblcreditnotes');
+                    $this->logger->write("Api : queryinvoice() : Querying credit note started", 'r');
+                    $inv_check->load(array('TRIM(erpcreditnoteid)=?', $erpinvoiceid));
+                    
+                    $this->logger->write($this->db->log(TRUE), 'r');
+                    
+                    if($inv_check->dry ()){
+                        $this->logger->write("Api : queryinvoice() : The credit note does not exist on eTW", 'r');
+                        $this->message = 'The credit note does not exist on EFRIS';
+                        $this->code = '99';
+                    } else {
+                        $this->logger->write("Api : queryinvoice() : The credit note was retrieved successfully", 'r');
+                        
+                        //Fetch details of the newly uploaded credit note
+                        $n_data = $this->util->downloadcreditnote($this->userid_u, $inv_check->referenceno);//will return JSON.
+                        //var_dump($data);
+                        
+                        $n_data = json_decode($n_data, true);
+                        //var_dump($n_data);
+                        
+                        
+                        if(isset($n_data['records'])){
+                            $antifakeCode = '';
+                            $invoiceNo = '';
+                            $issuedDate = '';
+                            $issuedDate = date("Y-m-d", strtotime($inv_check->applicationtime));
+                            $issuedTime = date("Y-m-d H:i:s", strtotime($inv_check->applicationtime));
+                            $issuedDatePdf = date("Y-m-d H:i:s", strtotime($inv_check->applicationtime));
+                            $isInvalid = '';
+                            $isRefund = '';
+                            $grossAmount = 0;
+                            $itemCount = 0;
+                            $netAmount = 0;
+                            $qrCode = '';
+                            $taxAmount = 0;
+                            $modeCode = '';
+                            $modeName = '';
+                            $grossAmountWords = '';
+                            $oriGrossAmount = 0;
+                            $currencyRate = 1;
+                            
+                            foreach($n_data['records'] as $elem){
+                                
+                                $i_data = $this->util->downloadinvoice($this->userid_u, $elem['invoiceNo']);
+                                $i_data = json_decode($i_data, true);
+                                
+                                /*START OF INVOICE BLOCK*/
+                                if (isset($i_data['basicInformation'])){
+                                    $antifakeCode = $i_data['basicInformation']['antifakeCode']; //32966911991799104051
+                                    $invoiceId = $i_data['basicInformation']['invoiceId']; //3257429764295992735
+                                    $invoiceNo = $i_data['basicInformation']['invoiceNo']; //3120012276043
+                                    
+                                    $issuedDate = $i_data['basicInformation']['issuedDate']; //18/09/2020 17:14:12
+                                    $issuedDate = str_replace('/', '-', $issuedDate);//Replace / with -
+                                    $issuedDate = date("Y-m-d H:i:s", strtotime($issuedDate));
+                                    
+                                    $issuedTime = $i_data['basicInformation']['issuedDate']; //18/09/2020 17:14:12
+                                    $issuedTime = str_replace('/', '-', $issuedTime);//Replace / with -
+                                    $issuedTime = date("Y-m-d H:i:s", strtotime($issuedTime));
+                                    
+                                    $issuedDatePdf = $i_data['basicInformation']['issuedDatePdf']; //318/09/2020 17:14:12
+                                    $issuedDatePdf = str_replace('/', '-', $issuedDatePdf);//Replace / with -
+                                    $issuedDatePdf = date("Y-m-d H:i:s", strtotime($issuedDatePdf));
+                                    
+                                    $oriInvoiceId = $i_data['basicInformation']['oriInvoiceId'];//1
+                                    $isInvalid = $i_data['basicInformation']['isInvalid'];//1
+                                    $isRefund = $i_data['basicInformation']['isRefund'];//1
+                                    
+                                    $currencyRate = $i_data['basicInformation']['currencyRate'];
+                                    
+                                    $invoiceid = $invoiceId;
+                                    //$invoicenumber = $invoiceNo;
+                                    $issueddate = $issuedDate;
+                                    $fdn = $antifakeCode;
+                                    
+                                }
+                                
+                                if (isset($i_data['summary'])){
+                                    $grossAmount = $i_data['summary']['grossAmount']; //832000
+                                    $itemCount = $i_data['summary']['itemCount']; //1
+                                    $netAmount = $i_data['summary']['netAmount']; //705084.75
+                                    $qrCode = $i_data['summary']['qrCode']; //020000001149IC1200122760430004F588000000C1A8450A20A021D534A1000121462A1000094968~MM INTERGRATED STEEL MILLS (UGANDA) LIMITED~Ediomu & Company~Kiboko Galv Corr. Sheet 36G
+                                    $taxAmount = $i_data['summary']['taxAmount'];//126915.25
+                                    $modeCode = $i_data['summary']['modeCode'];//0
+                                    $oriGrossAmount = $i_data['summary']['oriGrossAmount'];//19556.48
+                                    
+                                    $mode = new modes($this->db);
+                                    $mode->getByCode($modeCode);
+                                    $modeName = $mode->name;//online
+                                    
+                                    $f = new \NumberFormatter("en", NumberFormatter::SPELLOUT);
+                                    $grossAmountWords = $f->format($grossAmount);//two million,
+                                    
+                                    $qr = $qrCode;
+                                    
+                                }
+                                /*END OF INVOICE BLOCK*/
+                                
+                                $refundInvoiceNo = $elem['invoiceNo'];
+                                $approveStatusCode = $elem['approveStatus'];
+                                $applicationTime = $elem['applicationTime']; //28/09/2020 00:43:29
+                                $referenceNo = $elem['referenceNo']; //21PL010073993
+                                $oriInvoiceNo = $elem['oriInvoiceNo']; //120014732476
+                                
+                                $applicationTime = str_replace('/', '-', $applicationTime);//Replace / with -
+                                $applicationTime = date("Y-m-d H:i:s", strtotime($applicationTime));
+                                
+                                $grossAmount = $elem['grossAmount'];
+                                $totalAmount = $elem['totalAmount'];
+                                //$refundIssuedDate = $elem['refundIssuedDate'];
+                                $refundIssuedDate = $applicationTime;//28-09-2020 00:43:29
+                                $appId = $elem['id'];
+                                
+                                try{
+                                    
+                                    $isInvalid = empty($isInvalid) || trim($isInvalid) == ''? 'NULL' : $isInvalid;
+                                    $isRefund = empty($isRefund) || trim($isRefund) == ''? 'NULL' : $isRefund;
+                                    $grossAmount = empty($grossAmount) || trim($grossAmount) == ''? 'NULL' : $grossAmount;
+                                    $itemCount = empty($itemCount) || trim($itemCount) == ''? 'NULL' : $itemCount;
+                                    $netAmount = empty($netAmount) || trim($netAmount) == ''? 'NULL' : $netAmount;
+                                    $taxAmount = empty($taxAmount) || trim($taxAmount) == ''? 'NULL' : $taxAmount;
+                                    $oriGrossAmount = empty($oriGrossAmount) || trim($oriGrossAmount) == ''? 'NULL' : $oriGrossAmount;
+                                    $totalAmount = empty($totalAmount) || trim($totalAmount) == ''? 'NULL' : $totalAmount;
+                                    $refundInvoiceNo = empty($refundInvoiceNo) || trim($refundInvoiceNo) == ''? '' : $refundInvoiceNo;
+                                    
+                                    $this->db->exec(array('UPDATE tblcreditnotes SET antifakecode = "' . $antifakeCode . 
+                                        '", einvoiceid = "' . $invoiceId . 
+                                        '", einvoicenumber = "' . $invoiceNo . 
+                                        '", issueddate = "' . $issuedDate . 
+                                        '", issuedtime = "' . $issuedTime . 
+                                        '", issueddatepdf = "' . $issuedDatePdf . 
+                                        '", oriinvoiceid = "' . $oriInvoiceId . 
+                                        '", isinvalid = ' . $isInvalid . 
+                                        ', isrefund = ' . $isRefund .
+                                        ', grossamount = ' . $grossAmount . 
+                                        ', itemcount = ' . $itemCount . 
+                                        ', netamount = ' . $netAmount . 
+                                        ', einvoicedatamatrixcode = "' . $qrCode . 
+                                        '", taxamount = ' . $taxAmount . 
+                                        ', modecode = "' . $modeCode . 
+                                        '", modename = "' . $modeName . 
+                                        '", grossamountword = "' . $grossAmountWords .
+                                        '", origrossamount = ' . $oriGrossAmount . 
+                                        ', refundinvoiceno = "' . $refundInvoiceNo . 
+                                        '", approvestatus = "' . $approveStatusCode . 
+                                        '", totalamount = ' . $totalAmount . 
+                                        ', issueddate = "' . $refundIssuedDate . 
+                                        '", issuedtime = "' . $refundIssuedDate . 
+                                        '", creditnoteapplicationid = "' . $appId . 
+                                        '", applicationtime = "' . $applicationTime . 
+                                        '", currencyRate = ' . $currencyRate .
+                                        ', modifieddt = NOW(), modifiedby = ' . $this->userid . 
+                                        ' WHERE referenceno = "' . $inv_check->referenceno . '"'));
+                                    
+                                    $this->logger->write($this->db->log(TRUE), 'r');
+                                } catch (Exception $e) {
+                                    $this->logger->write("Api : queryinvoice() : Failed to update the table tblcreditnotes. The error message is " . $e->getMessage(), 'r');
+                                }
+                                
+                                if ($referenceNo = $inv_check->referenceno) {
+                                    $invoicenumber = $oriInvoiceNo;
+                                    $ref = $referenceNo;
+                                    $appstatus = $this->util->decodeapprovestatus($approveStatusCode);
+                                    $creditnotenumber = $refundInvoiceNo;
+                                }
+                                
+                            }
+                            
+                            $this->message = 'The credit note was retrived successfully';
+                            $this->code = '00';
+                            
+                        } elseif (isset($n_data['returnCode'])){
+                            $this->logger->write("Api : queryinvoice() : The operation to download the credit note not successful. The error message is " . $n_data['returnMessage'], 'r');
+                            $this->message = $n_data['returnMessage'];
+                            $this->code = $n_data['returnCode'];
+                        } else {
+                            $this->logger->write("Api : queryinvoice() : The operation to download the credit note not successful.", 'r');
+                            $this->message = 'The operation was not successful';
+                            $this->code = '1005';
+                        }
+                    }
+                    
+                    
+                    
+                } elseif ($vchtype == 'Debit Note'){
+                    $inv_check = new DB\SQL\Mapper($this->db, 'tbldebitnotes');
+                    $this->logger->write("Api : queryinvoice() : Querying debit note started", 'r');
+                    
+                    $inv_check = new DB\SQL\Mapper($this->db, 'tbldebitnotes');
+                    $inv_check->load(array('TRIM(erpdebitnoteid)=?', $erpinvoiceid));
+                    
+                    $this->logger->write($this->db->log(TRUE), 'r');
+                    
+                    $this->logger->write("Api : queryinvoice() : Proceeding to check the query results", 'r');
+                    
+                    if($inv_check->dry ()){
+                        $this->logger->write("Api : queryinvoice() : The debit note does not exist on eTW", 'r');
+                        $this->message = 'The debit note does not exist on EFRIS';
+                        $this->code = '99';
+                    } else {
+                        $this->logger->write("Api : queryinvoice() : The debit note was retrieved successfully", 'r');
+                        $this->message = 'The debit note was retrived successfully';
+                        $this->code = '00';
+                        
+                        $invoiceid = $inv_check->einvoiceid;
+                        $invoicenumber = $inv_check->einvoicenumber;
+                        $issueddate = $inv_check->issuedtime;
+                        $fdn = $inv_check->antifakecode;
+                        $qr = $inv_check->einvoicedatamatrixcode;
+                        
+                        $i_data = $this->util->downloadinvoice($this->userid_u, $invoicenumber);
+                        $i_data = json_decode($i_data, true);
+                        
+                        $antifakeCode = '';
+                        $invoiceNo = '';
+                        $issuedDate = '';
+                        $issuedDate = date("Y-m-d", strtotime($inv_check->applicationtime));
+                        $issuedTime = date("Y-m-d H:i:s", strtotime($inv_check->applicationtime));
+                        $issuedDatePdf = date("Y-m-d H:i:s", strtotime($inv_check->applicationtime));
+                        $oriInvoiceId = '';
+                        $oriInvoiceNo = '';
+                        $isInvalid = '';
+                        $isRefund = '';
+                        $grossAmount = 0;
+                        $itemCount = 0;
+                        $netAmount = 0;
+                        $qrCode = '';
+                        $taxAmount = 0;
+                        $modeCode = '';
+                        $modeName = '';
+                        $grossAmountWords = '';
+                        $oriGrossAmount = 0;
+                        $oriIssuedDate = '';
+                        $currencyRate = 1;
+                        
+                        /*START OF INVOICE BLOCK*/
+                        if (isset($i_data['basicInformation'])){
+                            $antifakeCode = $i_data['basicInformation']['antifakeCode']; //32966911991799104051
+                            $invoiceId = $i_data['basicInformation']['invoiceId']; //3257429764295992735
+                            $invoiceNo = $i_data['basicInformation']['invoiceNo']; //3120012276043
+                            
+                            $issuedDate = $i_data['basicInformation']['issuedDate']; //18/09/2020 17:14:12
+                            $issuedDate = str_replace('/', '-', $issuedDate);//Replace / with -
+                            $issuedDate = date("Y-m-d H:i:s", strtotime($issuedDate));
+                            
+                            $issuedTime = $i_data['basicInformation']['issuedDate']; //18/09/2020 17:14:12
+                            $issuedTime = str_replace('/', '-', $issuedTime);//Replace / with -
+                            $issuedTime = date("Y-m-d H:i:s", strtotime($issuedTime));
+                            
+                            $issuedDatePdf = $i_data['basicInformation']['issuedDatePdf']; //318/09/2020 17:14:12
+                            $issuedDatePdf = str_replace('/', '-', $issuedDatePdf);//Replace / with -
+                            $issuedDatePdf = date("Y-m-d H:i:s", strtotime($issuedDatePdf));
+                            
+                            
+                            $oriIssuedDate = $i_data['basicInformation']['oriIssuedDate']; //318/09/2020 17:14:12
+                            $oriIssuedDate = str_replace('/', '-', $oriIssuedDate);//Replace / with -
+                            $oriIssuedDate = date("Y-m-d H:i:s", strtotime($oriIssuedDate));
+                            
+                            $oriInvoiceId = $i_data['basicInformation']['oriInvoiceId'];//1
+                            $oriInvoiceNo = $i_data['basicInformation']['oriInvoiceNo'];//1
+                            $isInvalid = $i_data['basicInformation']['isInvalid'];//1
+                            $isRefund = $i_data['basicInformation']['isRefund'];//1
+                            
+                            $currencyRate = $i_data['basicInformation']['currencyRate'];
+                            
+                            $invoiceid = $invoiceId;
+                            $issueddate = $issuedDate;
+                            $fdn = $antifakeCode;
+                            
+                        }
+                        
+                        if (isset($i_data['summary'])){
+                            $grossAmount = $i_data['summary']['grossAmount']; //832000
+                            $itemCount = $i_data['summary']['itemCount']; //1
+                            $netAmount = $i_data['summary']['netAmount']; //705084.75
+                            $qrCode = $i_data['summary']['qrCode']; //020000001149IC1200122760430004F588000000C1A8450A20A021D534A1000121462A1000094968~MM INTERGRATED STEEL MILLS (UGANDA) LIMITED~Ediomu & Company~Kiboko Galv Corr. Sheet 36G
+                            $taxAmount = $i_data['summary']['taxAmount'];//126915.25
+                            $modeCode = $i_data['summary']['modeCode'];//0
+                            $oriGrossAmount = $i_data['summary']['oriGrossAmount'];//19556.48
+                            
+                            $mode = new modes($this->db);
+                            $mode->getByCode($modeCode);
+                            $modeName = $mode->name;//online
+                            
+                            $f = new \NumberFormatter("en", NumberFormatter::SPELLOUT);
+                            $grossAmountWords = $f->format($grossAmount);//two million,
+                            
+                            $qr = $qrCode;
+                            
+                        }
+                        /*END INVOICE BLOCK*/
+                        
+                        if ($invoicenumber == $invoiceNo) {
+                            try{
+                                
+                                $isInvalid = empty($isInvalid) || trim($isInvalid) == ''? 'NULL' : $isInvalid;
+                                $isRefund = empty($isRefund) || trim($isRefund) == ''? 'NULL' : $isRefund;
+                                $grossAmount = empty($grossAmount) || trim($grossAmount) == ''? 'NULL' : $grossAmount;
+                                $itemCount = empty($itemCount) || trim($itemCount) == ''? 'NULL' : $itemCount;
+                                $netAmount = empty($netAmount) || trim($netAmount) == ''? 'NULL' : $netAmount;
+                                $taxAmount = empty($taxAmount) || trim($taxAmount) == ''? 'NULL' : $taxAmount;
+                                $oriGrossAmount = empty($oriGrossAmount) || trim($oriGrossAmount) == ''? 'NULL' : $oriGrossAmount;
+                                
+                                $this->db->exec(array('UPDATE tbldebitnotes SET oriinvoiceno = "' . $oriInvoiceNo . 
+                                    '", antifakecode = "' . $antifakeCode . 
+                                    '", einvoiceid = "' . $invoiceId . 
+                                    '", einvoicenumber = "' . $invoiceNo . 
+                                    '", issueddate = "' . $issuedDate . 
+                                    '", issuedtime = "' . $issuedTime . 
+                                    '", issueddatepdf = "' . $issuedDatePdf . 
+                                    '", oriinvoiceid = "' . $oriInvoiceId . 
+                                    '", isinvalid = ' . $isInvalid . 
+                                    ', isrefund = ' . $isRefund . 
+                                    ', grossamount = ' . $grossAmount . 
+                                    ', itemcount = ' . $itemCount . 
+                                    ', netamount = ' . $netAmount . 
+                                    ', einvoicedatamatrixcode = "' . $qrCode . 
+                                    '", taxamount = ' . $taxAmount . 
+                                    ', modecode = "' . $modeCode . 
+                                    '", modename = "' . $modeName . 
+                                    '", grossamountword = "' . $grossAmountWords . 
+                                    '", origrossamount = ' . $oriGrossAmount . 
+                                    ', currencyRate = ' . $currencyRate .
+                                    ', modifieddt = NOW(), modifiedby = ' . $this->userid . 
+                                    ' WHERE einvoicenumber = "' . $invoicenumber . '"'));
+                                
+                                $this->logger->write($this->db->log(TRUE), 'r');
+                            } catch (Exception $e) {
+                                $this->logger->write("Api : queryinvoice() : Failed to update the table tbldebitnotes. The error message is " . $e->getMessage(), 'r');
+                            }
+                        }
+                        
+                        
+                    }
+                // Maintainer note (2026-04-25 08:24 +02:00): accept both legacy ERP labels and explicit Invoice values.
+                } elseif (
+                    $vchtype == 'Sales' ||
+                    stripos($vchtype, 'Sales') !== false ||
+                    $vchtype == 'Invoice' ||
+                    stripos($vchtype, 'Invoice') !== false
+                ){
+                    $this->logger->write("Api : queryinvoice() : Querying invoice started", 'r');
+                    $inv_check = new DB\SQL\Mapper($this->db, 'tblinvoices');
+                    $inv_check->load(array('TRIM(erpinvoiceid)=?', $erpinvoiceid));
+                    
+                    $this->logger->write($this->db->log(TRUE), 'r');
+                    
+                    $this->logger->write("Api : queryinvoice() : Proceeding to check the query results", 'r');
+                    
+                    if($inv_check->dry ()){
+                        $this->logger->write("Api : queryinvoice() : The invoice does not exist on eTW", 'r');
+                        $this->message = 'The invoice does not exist on EFRIS';
+                        $this->code = '99';
+                    } else {
+                        $this->logger->write("Api : queryinvoice() : The invoice was retrieved successfully", 'r');
+                        $this->message = 'The invoice was retrived successfully';
+                        $this->code = '00';
+                        
+                        $invoiceid = $inv_check->einvoiceid;
+                        $invoicenumber = $inv_check->einvoicenumber;
+                        $issueddate = $inv_check->issuedtime;
+                        $fdn = $inv_check->antifakecode;
+                        $qr = $inv_check->einvoicedatamatrixcode;
+                        
+                        
+                        $i_data = $this->util->downloadinvoice($this->userid_u, $invoicenumber);
+                        $i_data = json_decode($i_data, true);
+                        
+                        $antifakeCode = '';
+                        $invoiceNo = '';
+                        $issuedDate = '';
+                        $issuedDate = date("Y-m-d", strtotime($inv_check->issuedtime));
+                        $issuedTime = date("Y-m-d H:i:s", strtotime($inv_check->issuedtime));
+                        $issuedDatePdf = date("Y-m-d H:i:s", strtotime($inv_check->issuedtime));
+                        $oriInvoiceId = '';
+                        $oriInvoiceNo = '';
+                        $isInvalid = '';
+                        $isRefund = '';
+                        $grossAmount = 0;
+                        $itemCount = 0;
+                        $netAmount = 0;
+                        $qrCode = '';
+                        $taxAmount = 0;
+                        $modeCode = '';
+                        $modeName = '';
+                        $grossAmountWords = '';
+                        $oriGrossAmount = 0;
+                        $oriIssuedDate = '';
+                        $currencyRate = 1;
+                        
+                        /*START OF INVOICE BLOCK*/
+                        if (isset($i_data['basicInformation'])){
+                            $antifakeCode = $i_data['basicInformation']['antifakeCode']; //32966911991799104051
+                            $invoiceId = $i_data['basicInformation']['invoiceId']; //3257429764295992735
+                            $invoiceNo = $i_data['basicInformation']['invoiceNo']; //3120012276043
+                            
+                            $issuedDate = $i_data['basicInformation']['issuedDate']; //18/09/2020 17:14:12
+                            $issuedDate = str_replace('/', '-', $issuedDate);//Replace / with -
+                            $issuedDate = date("Y-m-d H:i:s", strtotime($issuedDate));
+                            
+                            $issuedTime = $i_data['basicInformation']['issuedDate']; //18/09/2020 17:14:12
+                            $issuedTime = str_replace('/', '-', $issuedTime);//Replace / with -
+                            $issuedTime = date("Y-m-d H:i:s", strtotime($issuedTime));
+                            
+                            $issuedDatePdf = $i_data['basicInformation']['issuedDatePdf']; //318/09/2020 17:14:12
+                            $issuedDatePdf = str_replace('/', '-', $issuedDatePdf);//Replace / with -
+                            $issuedDatePdf = date("Y-m-d H:i:s", strtotime($issuedDatePdf));
+                            
+                            
+                            $oriIssuedDate = $i_data['basicInformation']['oriIssuedDate']; //318/09/2020 17:14:12
+                            $oriIssuedDate = str_replace('/', '-', $oriIssuedDate);//Replace / with -
+                            $oriIssuedDate = date("Y-m-d H:i:s", strtotime($oriIssuedDate));
+                            
+                            $oriInvoiceId = $i_data['basicInformation']['oriInvoiceId'];//1
+                            $oriInvoiceNo = $i_data['basicInformation']['oriInvoiceNo'];//1
+                            $isInvalid = $i_data['basicInformation']['isInvalid'];//1
+                            $isRefund = $i_data['basicInformation']['isRefund'];//1
+                            $currencyRate = $i_data['basicInformation']['currencyRate'];
+                            
+                            $invoiceid = $invoiceId;
+                            $issueddate = $issuedDate;
+                            $fdn = $antifakeCode;
+                            
+                        }
+                        
+                        if (isset($i_data['summary'])){
+                            $grossAmount = $i_data['summary']['grossAmount']; //832000
+                            $itemCount = $i_data['summary']['itemCount']; //1
+                            $netAmount = $i_data['summary']['netAmount']; //705084.75
+                            $qrCode = $i_data['summary']['qrCode']; //020000001149IC1200122760430004F588000000C1A8450A20A021D534A1000121462A1000094968~MM INTERGRATED STEEL MILLS (UGANDA) LIMITED~Ediomu & Company~Kiboko Galv Corr. Sheet 36G
+                            $taxAmount = $i_data['summary']['taxAmount'];//126915.25
+                            $modeCode = $i_data['summary']['modeCode'];//0
+                            $oriGrossAmount = $i_data['summary']['oriGrossAmount'];//19556.48
+                            
+                            $mode = new modes($this->db);
+                            $mode->getByCode($modeCode);
+                            $modeName = $mode->name;//online
+                            
+                            $f = new \NumberFormatter("en", NumberFormatter::SPELLOUT);
+                            $grossAmountWords = $f->format($grossAmount);//two million,
+                            
+                            $qr = $qrCode;
+                            
+                        }
+                        /*END INVOICE BLOCK*/
+                        
+                        if ($invoicenumber == $invoiceNo) {
+                            try{
+                                $isInvalid = empty($isInvalid) || trim($isInvalid) == ''? 'NULL' : $isInvalid;
+                                $isRefund = empty($isRefund) || trim($isRefund) == ''? 'NULL' : $isRefund;
+                                $grossAmount = empty($grossAmount) || trim($grossAmount) == ''? 'NULL' : $grossAmount;
+                                $itemCount = empty($itemCount) || trim($itemCount) == ''? 'NULL' : $itemCount;
+                                $netAmount = empty($netAmount) || trim($netAmount) == ''? 'NULL' : $netAmount;
+                                $taxAmount = empty($taxAmount) || trim($taxAmount) == ''? 'NULL' : $taxAmount;
+                                
+                                $this->db->exec(array('UPDATE tblinvoices SET antifakecode = "' . $antifakeCode . 
+                                    '", einvoiceid = "' . $invoiceId . 
+                                    '", einvoicenumber = "' . $invoiceNo . 
+                                    '", issueddate = "' . $issuedDate . 
+                                    '", issuedtime = "' . $issuedTime . 
+                                    '", issueddatepdf = "' . $issuedDatePdf .
+                                    '", isinvalid = ' . $isInvalid . 
+                                    ', isrefund = ' . $isRefund . 
+                                    ', grossamount = ' . $grossAmount . 
+                                    ', itemcount = ' . $itemCount . 
+                                    ', netamount = ' . $netAmount . 
+                                    ', einvoicedatamatrixcode = "' . $qrCode . 
+                                    '", taxamount = ' . $taxAmount . 
+                                    ', modecode = "' . $modeCode . 
+                                    '", modename = "' . $modeName . 
+                                    '", grossamountword = "' . $grossAmountWords . 
+                                    '", currencyRate = ' . $currencyRate .
+                                    ', modifieddt = NOW(), modifiedby = ' . $this->userid . 
+                                    ' WHERE einvoicenumber = "' . $invoicenumber . '"'));
+                                
+                                $this->logger->write($this->db->log(TRUE), 'r');
+                            } catch (Exception $e) {
+                                $this->logger->write("Api : queryinvoice() : Failed to update the table tblinvoices. The error message is " . $e->getMessage(), 'r');
+                            }
+                        }
+                        
+                    }
+                } else {
+                    $this->logger->write("Api : queryinvoice() : Unsupported voucher type supplied: " . $vchtype, 'r');
+                    $this->message = 'Unsupported voucher type';
+                    $this->code = '1006';
+                }
+            } else {
+                $this->logger->write("Api : queryinvoice() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+                       
+            
+            
+            
+            
+            
+            $activity = 'QUERYINVOICE: ' . $erpinvoiceid . ': ' . $erpinvoiceno . ': ' . $this->message;
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+        }
+        
+
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array(
+                "INVID" => $invoiceid,
+                "INVNO" => $invoicenumber,
+                "ISSUEDT" => $issueddate,
+                "FDN" => $fdn,
+                "QRCODE" => $qr,
+                "REFERENCE" => $ref,
+                "APPROVESTATUS" => $appstatus,
+                "CNNUMBER" => $creditnotenumber
+            )
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+    }
+    
+
+    /**
+     *	@name voidcreditnote
+     *  @desc void a creditnote
+     *	@return string
+     *	@param NULL
+     **/
+    function voidcreditnote(){
+        $operation = NULL; //tblevents
+        $permission = 'CANCELCREDITNOTE'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            $invoiceid = '';
+            $invoicenumber = '';
+            $issueddate = '';
+            $fdn = '';
+            $qr = '';
+            $ref = '';
+            $appstatus = '';
+            
+            
+            
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            $erpinvoiceid = trim($json['VOUCHERNUMBER']);
+            $erpinvoiceno = trim($json['VOUCHERREF']);
+            $vchtype = trim($json['VOUCHERTYPE']);
+            $vchtypename = trim($json['VOUCHERTYPENAME']);
+            
+            $this->logger->write("Api : voidcreditnote() : The userid is: " . $this->userid_u, 'r');
+            $this->logger->write("Api : voidcreditnote() : Checking permissions", 'r');
+            if ($this->userpermissions[$permission]) {
+                
+                
+                $inv_check = new DB\SQL\Mapper($this->db, 'tblcreditnotes');
+                $this->logger->write("Api : voidcreditnote() : Querying credit note started", 'r');
+                $inv_check->load(array('TRIM(erpcreditnoteid)=?', $erpinvoiceid));
+                
+                $this->logger->write($this->db->log(TRUE), 'r');
+                
+                if($inv_check->dry ()){
+                    $this->logger->write("Api : voidcreditnote() : The credit note does not exist on eTW", 'r');
+                    $this->message = 'The credit note does not exist on EFRIS';
+                    $this->code = '99';
+                } else {
+                    $this->logger->write("Api : voidcreditnote() : The credit note was retrieved successfully", 'r');
+                    
+                    //Submit the cancel request
+                    $data = $this->util->voidcreditnote($this->userid_u, $inv_check->creditnoteapplicationid, $inv_check->oriinvoiceno, $inv_check->referenceno);
+                    $data = json_decode($data, true);
+                    /**
+                     * Check the feedback for success or failure
+                     */
+                    if (isset($data['returnCode'])){
+                        $this->logger->write("Api : queryinvoice() : The operation to download the credit note not successful. The error message is " . $data['returnMessage'], 'r');
+                        $this->message = $data['returnMessage'];
+                        $this->code = $data['returnCode'];
+                        
+                        $body = $this->code . ' : ' . $this->message;
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    } else {
+                        //Fetch details of the newly uploaded credit note
+                        $n_data = $this->util->downloadcreditnote($this->userid_u, $inv_check->referenceno);//will return JSON.
+                        //var_dump($data);
+                        
+                        $n_data = json_decode($n_data, true);
+                        //var_dump($n_data);
+                        
+                        
+                        if(isset($n_data['records'])){
+                            
+                            /*if ($n_data['records']) {
+                             ;
+                             } else {
+                             ;
+                             }*/
+                            
+                            foreach($n_data['records'] as $elem){
+                                $refundInvoiceNo = $elem['invoiceNo'];
+                                $approveStatusCode = $elem['approveStatus'];
+                                $applicationTime = $elem['applicationTime']; //28/09/2020 00:43:29
+                                $referenceNo = $elem['referenceNo']; //21PL010073993
+                                
+                                $applicationTime = str_replace('/', '-', $applicationTime);//Replace / with -
+                                $applicationTime = date("Y-m-d H:i:s", strtotime($applicationTime));
+                                
+                                $grossAmount = $elem['grossAmount'];
+                                $totalAmount = $elem['totalAmount'];
+                                //$refundIssuedDate = $elem['refundIssuedDate'];
+                                $refundIssuedDate = $applicationTime;//28-09-2020 00:43:29
+                                $appId = $elem['id'];
+                                
+                                try{
+                                    $this->db->exec(array('UPDATE tblcreditnotes SET refundinvoiceno = "' . $refundInvoiceNo . '", approvestatus = "' . $approveStatusCode . '", grossamount = "' . $grossAmount . '", totalamount = "' . $totalAmount . '", issueddate = "' . $refundIssuedDate . '", issuedtime = "' . $refundIssuedDate . '", creditnoteapplicationid = "' . $appId . '", applicationtime = "' . $applicationTime . '", modifieddt = NOW(), modifiedby = ' . $this->userid . ' WHERE referenceno = "' . $inv_check->referenceno . '"'));
+                                    $this->logger->write($this->db->log(TRUE), 'r');
+                                } catch (Exception $e) {
+                                    $this->logger->write("Api : voidcreditnote() : Failed to update the table tblcreditnotes. The error message is " . $e->getMessage(), 'r');
+                                }
+                                
+                                if ($referenceNo = $inv_check->referenceno) {
+                                    $invoiceid = $appId;
+                                    $invoicenumber = $refundInvoiceNo;
+                                    $ref = $referenceNo;
+                                    $appstatus = $this->util->decodeapprovestatus($approveStatusCode);
+                                }
+                                
+                            }
+                            
+                            $this->message = 'The operation was successful';
+                            $this->code = '00';
+                            
+                        } elseif (isset($n_data['returnCode'])){
+                            $this->logger->write("Api : voidcreditnote() : The operation to download the credit note not successful. The error message is " . $n_data['returnMessage'], 'r');
+                            $this->message = $n_data['returnMessage'];
+                            $this->code = $n_data['returnCode'];
+                            
+                            $body = $this->code . ' : ' . $this->message;
+                            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                        } else {
+                            $this->logger->write("Api : voidcreditnote() : The operation to download the credit note not successful.", 'r');
+                            $this->message = 'The operation was not successful';
+                            $this->code = '1005';
+                            
+                            $body = $this->code . ' : ' . $this->message;
+                            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                        }
+                    }
+                    
+                }
+            } else {
+                $this->logger->write("Api : voidcreditnote() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+                        
+            
+            $activity = 'VOIDCREDITNOTE: ' . $erpinvoiceid . ': ' . $erpinvoiceno . ': ' . $this->message;
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+        }
+        
+
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array(
+                "REFERENCE" => $ref,
+                "APPROVESTATUS" => $appstatus
+            )
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
+    }
+    
+    /**
+     * @name beforeroute
+     * @desc invoke before any session
+     *
+     * @return NULL
+     * @param NULL
+     *
+     */
+    function beforeroute(){
+        $this->currentEndpoint = $this->resolveEndpointName();
+        $this->logger->write("Api : beforeroute() : Checking client details", 'r');
+        $REMOTE_ADDR = $this->f3->get('SERVER.REMOTE_ADDR');
+        $REMOTE_HOST = $this->f3->get('SERVER.REMOTE_HOST');
+        $REMOTE_PORT = $this->f3->get('SERVER.REMOTE_PORT');
+        $REMOTE_USER = $this->f3->get('SERVER.REMOTE_USER');
+        $REDIRECT_REMOTE_USER = $this->f3->get('SERVER.REDIRECT_REMOTE_USER');
+        $HTTP_X_FORWARDED_FOR = $this->f3->get('SERVER.HTTP_X_FORWARDED_FOR');
+        
+        $this->logger->write("Api : beforeroute() : The previous URL is " . $this->f3->get('SERVER.HTTP_REFERER'), 'r');
+        $this->logger->write("Api : beforeroute() : The current URL is " . $this->f3->get('SERVER.REQUEST_URI'), 'r');
+        
+        $url_components = parse_url($this->f3->get('SERVER.REQUEST_URI'));
+        parse_str($url_components['query'], $this->params);
+        
+        $API_KEY = trim($this->params['apikey']);
+        
+        $this->logger->write("Api : beforeroute() : The apikey is: " . $API_KEY, 'r');
+        
+        $this->logger->write("Api : beforeroute() : REMOTE_ADDR = " . $REMOTE_ADDR, 'r');
+        $this->logger->write("Api : beforeroute() : REMOTE_HOST = " . $REMOTE_HOST, 'r');
+        $this->logger->write("Api : beforeroute() : REMOTE_PORT = " . $REMOTE_PORT, 'r');
+        $this->logger->write("Api : beforeroute() : REMOTE_USER = " . $REMOTE_USER, 'r');
+        $this->logger->write("Api : beforeroute() : REDIRECT_REMOTE_USER = " . $REDIRECT_REMOTE_USER, 'r');
+        $this->logger->write("Api : beforeroute() : HTTP_X_FORWARDED_FOR = " . $HTTP_X_FORWARDED_FOR, 'r');
+        
+        //Pick the XML content from the client
+        $this->json = file_get_contents('php://input');
+        $this->logger->write("Api : beforeroute() : Raw body content is: " . $this->json, 'r');
+        
+        //Replace special characters
+        /*$this->xml = htmlspecialchars_decode($this->xml, ENT_XML1);
+         $this->logger->write("Api : beforeroute() : The xml after replacing special xters" . $this->xml, 'r');*/
+        
+        $json = json_decode($this->json, TRUE); //convert JSON into array
+
+        // Maintainer note (2026-04-14): requests like GET /testapi can arrive
+        // without a JSON body; normalize to an empty array to avoid Countable
+        // warnings and keep validation behavior deterministic.
+        if (!is_array($json)) {
+            $json = array();
+        }
+        
+        if(count($json) == 0 && empty($API_KEY)){
+            
+            $this->message = 'No parameters were sent!';
+            $this->code = '1000';
+            
+            $this->errorcode = '1000';
+            $this->errormessage = 'No parameters were sent!';
+            
+            return;
+            /*} elseif (!empty($API_KEY)) {
+             //The API KEY was sent as part of a GET call
+             $this->logger->write("Api : beforeroute() : The apikey was sent in the GET call", 'r');
+             $this->logger->write("Api : beforeroute() : The apikey is: " . $API_KEY, 'r');*/
+        } else {
+            /**
+             * Author: Francis Lubanga <francis.lubanga@gmail.com>
+             * Date: 2026-01-09
+             * Description: Include a check for TIN of the integrated organisation
+             */
+            if (isset($json['ORGTIN'])){
+                if(empty($json['ORGTIN'])){
+                    $this->message = 'No company TIN was specified';
+                    $this->code = '7650';
+                    
+                    $this->errorcode = '7650';
+                    $this->errormessage = 'No company TIN was specified';
+                    
+                    return;
+                } else {
+                    $companydetails = new organisations($this->db);
+                    $companydetails->getByID($this->appsettings['SELLER_RECORD_ID']);
+                    
+                    if (trim($json['ORGTIN']) == trim($companydetails->tin)) {
+                        $this->logger->write("Api : beforeroute() : The supplied company TIN " . trim($json['ORGTIN']) . " and the integrated TIN " . $companydetails->tin . " match", 'r');
+                    }else {
+                        $this->message = 'The supplied company TIN and the integrated TIN do NOT match!';
+                        $this->code = '7651';
+                        
+                        $this->errorcode = '7651';
+                        $this->errormessage = 'The supplied company TIN and the integrated TIN do NOT match!';
+                        return;
+                    }
+                }
+            } else {
+                $this->message = 'No company TIN was specified';
+                $this->code = '7650';
+                
+                $this->errorcode = '7650';
+                $this->errormessage = 'No company TIN was specified';
+                return;
+            }
+            /*************END************/
+            
+            $this->logger->write("Api : beforeroute() : The apikey is: " . $json['APIKEY'], 'r');
+            
+            if ($json['APIKEY']) {
+                $this->apikey = trim($json['APIKEY']);
+            } else {
+                $this->apikey = $API_KEY;
+            }
+            
+            $this->logger->write("Api : beforeroute() : The new apikey is: " . $this->apikey, 'r');
+            
+            if(empty($this->apikey)){
+                $this->message = 'No API Key was specified';
+                $this->code = '1001';
+                
+                $this->errorcode = '1001';
+                $this->errormessage = 'No API Key was specified';
+                
+                return;
+            } else {
+                $apikey_check = new DB\SQL\Mapper($this->db, 'tblapikeys');
+                $apikey_check->load(array('apikey=? AND status=? AND expirydt > NOW()', $this->apikey, $this->appsettings['APIKEYENABLEDSTATUS']));
+                $this->logger->write($this->db->log(TRUE), 'r');
+                
+                if($apikey_check->dry ()){
+                    $this->logger->write("Api : beforeroute() : The api key does not exist or is inactive or expired", 'r');
+                    $this->code = '1002';
+                    $this->message = 'The api key does not exist or is inactive or expired. Please contact your system administrator!';
+                    
+                    $this->errorcode = '1002';
+                    $this->errormessage = 'The api key does not exist or is inactive or expired. Please contact your system administrator!';
+                    
+                    return;
+                } else {
+                    $this->logger->write("Api : beforeroute() : Checking the version of the client", 'r');
+                    $this->version = $json['VERSION'];
+                    
+                    if (trim($this->version) == $this->appsettings['APPVERSION']) {
+                        $this->logger->write("Api : beforeroute() : The client version " . trim($this->version) . " and api version " . $this->appsettings['APPVERSION'] . " match", 'r');
+                    } else {
+                        $this->logger->write("Api : beforeroute() : The versions do not match", 'r');
+                        $this->code = '1003';
+                        $this->message = 'The plugin version does not match. Please contact your system administrator!';
+                        
+                        $this->errorcode = '1003';
+                        $this->errormessage = 'The plugin version does not match. Please contact your system administrator!';
+                        
+                        return;
+                    }
+                    
+                    $this->logger->write("Api : beforeroute() : Retrieving permissions of the api key", 'r');
+                    
+                    /**
+                     * 1. Get the api key's permissions, both inherited & customised
+                     * 2. Assign them to the permissions variable
+                     */
+                    $apikeypg = !empty($apikey_check->permissiongroup)? $apikey_check->permissiongroup : 'NULL';//user-specific permission
+                    $this->logger->write("Api : beforeroute() : PERMISSION GROUP = " . $apikeypg, 'r');
+                    
+                    $data = array();
+                    $pr = $this->db->exec(array('SELECT DISTINCT p.code, p.value FROM tblpermissiondetails p WHERE p.groupid IN (' . $apikeypg . ')'));
+                    foreach ($pr as $obj) {
+                        $data[$obj['code']] = $obj['value'];//insert a KEY/VALUE pair for each permission
+                    }
+                    
+                    $this->permissions = $data;
+                    
+                    $this->logger->write("Api : beforeroute() : Retrieving permissions of the current user", 'r');
+                    /**
+                     * 1. Get the user's permissions, both inherited & customised
+                     * 2. Assign them to the userpermissions variable
+                     */
+                    $user_u = new users($this->db);
+                    $erpuser = trim($json['ERPUSER']);
+                    $user_u->getByErpUserCode(strtoupper($erpuser), $this->appsettings['ACTIVEUSERSTATUSID']);
+                    $this->logger->write($this->db->log(TRUE), 'r');
+                    
+                    $this->logger->write("Api : beforeroute() : The current user is: " . $erpuser, 'r');
+                    $this->userid_u = $user_u->id;
+                    $this->username_u = $user_u->username;
+                    $this->userbranch_u = $user_u->branch;
+                    
+                    $userpg = !empty($user_u->permissiongroup)? $user_u->permissiongroup : 'NULL';//user-specific permission
+                    $this->logger->write("Api : beforeroute() : PERMISSION GROUP = " . $userpg, 'r');
+                    
+                    $data = array();
+                    $pr = $this->db->exec(array('SELECT DISTINCT p.code, p.value FROM tblpermissiondetails p WHERE p.groupid IN (' . $userpg . ')'));
+                    foreach ($pr as $obj) {
+                        $data[$obj['code']] = $obj['value'];//insert a KEY/VALUE pair for each permission
+                    }
+                    
+                    $this->userpermissions = $data;
+                    
+                    
+                    
+                    $vat_check = new DB\SQL\Mapper($this->db, 'tbltaxtypes');
+                    $vat_check->load(array('TRIM(code)=?', $this->appsettings['EFRIS_VAT_TAX_TYPE_CODE']));
+                    
+                    if ($vat_check->dry()) {
+                        $this->logger->write("Api : beforeroute() : The tax payer is not VAT registered", 'r');
+                        $this->vatRegistered = 'N';
+                    } else {
+                        $this->logger->write("Api : beforeroute() : The tax payer is VAT registered", 'r');
+                        $this->vatRegistered = 'Y';
+                    }
+                    
+                    //Clear the response
+                    $this->message = NULL;
+                    $this->code = NULL;
+                    $this->response = NULL;
+                    
+                    $this->errorcode = NULL;
+                    $this->errormessage = NULL;
+                    
+                    //update lastaccessdt for the API
+                    try {
+                        $this->db->exec(array("UPDATE tblapikeys SET lastaccessdt = '" . date('Y-m-d H:i:s') . "' WHERE apikey = '" . $this->apikey . "'"));
+                    } catch (Exception $e) {
+                        $this->logger->write("Api : beforeroute() : The operation to update the lastaccessdt for the Api was not successful. The error messages is " . $e->getMessage(), 'r');
+                    }
+                }
+            }
+        }
+    }
+    
+    
+    
+    /**
+     * @name afterroute
+     * @desc invoke after any session
+     *
+     * @return NULL
+     * @param NULL
+     *
+     */
+    function afterroute(){
+        $this->logger->write("Api : afterroute() : Cleaning up", 'r');
+        
+        //Wipe the content
+        $this->xml = NULL;
+        $this->message = NULL;
+        $this->code = NULL;
+        $this->action = NULL;
+        $this->response = NULL;
+        $this->params = NULL;
+        
+        $this->errorcode = NULL;
+        $this->errormessage = NULL;
+        
+        $this->apikey = NULL;
+        $this->version = NULL;
+        
+        $this->permissions = NULL;
+        $this->userpermissions = NULL;
+    }
+    
+    
+    /**
+     *
+     * @name __constructor
+     * @desc Constructor for the Api class
+     * @return NULL
+     * @param NULL
+     *
+     */
+    function __construct(){
+        $f3 = Base::instance();
+        $this->f3 = $f3;
+        
+        $db = new DB\SQL($f3->get('dbserver'), $f3->get('dbuser'), $f3->get('dbpwd'), array(
+            \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION
+        ));
+        
+        $this->db = $db;
+        
+        $logger = new SmartLogger('api.log', 'api-trace.log');
+        $this->logger = $logger;
+        
+        $data = array();
+        $setting = new settings($db);
+        $settings = $setting->getNoneSensitive();
+        
+        foreach ($settings as $obj) {
+            $data[$obj['code']] = $obj['value'];//insert a KEY/VALUE pair for each setting
+        }
+        
+        $this->appsettings = $data;
+        
+        $this->userid = $this->appsettings['APIUSERID'];
+        $user = new users($this->db);
+        $user->getByID($this->userid);
+        $this->username = $user->username;
+        
+        $this->recipientname = $this->appsettings['SYSTEMALERTSRECIPIENTNAME'];
+        $this->recipientemail = $this->appsettings['SYSTEMALERTSRECIPIENTEMAIL'];
+        $this->emailhost = $this->appsettings['SYSTEMEMAILHOST'];
+        $this->emailport = $this->appsettings['SYSTEMEMAILPORT'];
+        
+        $this->subject = 'e-TaxWare: System Error (' . $this->appsettings['APPDOMAIN'] . ')';
+        
+        $util = new Utilities();
+        $this->util = $util;
+
+        register_shutdown_function(array($this, 'ensureEndpointAuditLog'));
+        
+    }
+}
+?>
