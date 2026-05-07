@@ -1,11 +1,29 @@
 # eTaxWare API Specification
 
-Last updated: 2026-04-26
+Last updated: 2026-05-07
 
 ## 0. Version and Change Tracking
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 2.1.19 | 2026-05-07 | Enforced mandatory `VOUCHERNUMBER` validation for `/stocktransfer` on both active Tally v18 XML and FTS v14 JSON handlers; requests without voucher number now fail fast with `-999` before duplicate-check/transfer submission. |
+| 2.1.18 | 2026-05-07 | Added explicit SmartLogger log-routing rules section in operations docs to permanently define API and utility trace vs operational log destinations. |
+| 2.1.17 | 2026-05-07 | Refined Tally v18 SmartLogger trace routing by updating the `beforeroute` raw-body log phrase to match trace classification rules, ensuring XML payload body lines are written to `api-trace.log` instead of `api.log`. |
+| 2.1.16 | 2026-05-07 | Added SmartLogger to Tally runtime on upgraded paths (`api/Tally/v18`, `util/Tally/v5`) so high-volume trace messages are routed to `api-trace.log`/`util-trace.log` while operational messages remain in `api.log`/`util.log`. |
+| 2.1.15 | 2026-05-07 | Upgraded Tally runtime version paths ahead of SmartLogger rollout: cloned `api/Tally/v17` to `api/Tally/v18` and `util/Tally/v4` to `util/Tally/v5`, then switched `AUTOLOAD` to the new versioned folders without changing runtime behavior. |
+| 2.1.14 | 2026-05-07 | Added stocktransfer duplicate-upload control in FTS v14 using `VOUCHERNUMBER` pre-check against `tblgoodsstocktransfer`; successful FTS stocktransfer logging now persists voucher metadata (`VOUCHERTYPE`, `VOUCHERTYPENAME`, `VOUCHERNUMBER`, `VOUCHERREF`) for replay protection parity with Tally flow. |
+| 2.1.13 | 2026-05-07 | Added stocktransfer duplicate-upload control in Tally v17 using `VOUCHERNUMBER` pre-check against persisted stock transfer logs (`tblgoodsstocktransfer`); successful stocktransfer logging now persists voucher metadata (`VOUCHERTYPE`, `VOUCHERTYPENAME`, `VOUCHERNUMBER`, `VOUCHERREF`) to enforce future duplicate checks. |
+| 2.1.12 | 2026-05-07 | Hardened Tally `stocktransfer` flow to initialize transfer context fields and prevent undefined-variable usage in transfer logs/audit activity; derived product/quantity context from source inventories for deterministic logging. |
+| 2.1.11 | 2026-05-07 | Added catch-all unsupported-format fail-fast handling (`1093`) for payloads that are neither valid JSON nor valid XML. Applies to both active FTS JSON adapter and Tally XML adapter while preserving existing dedicated mismatch codes (`1090`, `1091`, `1092`). |
+| 2.1.10 | 2026-05-07 | Standardized persisted maintainer inline-commentary format in repo instruction files to explicitly use `Modification Date`, `Modified By`, and `Description` keys. |
+| 2.1.9 | 2026-05-07 | Added repository governance checklist to `README.md` and persisted repo-level coding standards via agent instruction references for consistent future sessions. |
+| 2.1.8 | 2026-05-07 | Added symmetric graceful fail-fast handling on XML adapter (`api/Tally/v17`) for JSON payloads: returns parser-friendly XML envelope with `RETURNCODE=1092` and concise guidance to use FTS endpoint. Includes detailed expected/received payload logging and end-to-end localhost verification; runtime restored to FTS v14 after test. |
+| 2.1.7 | 2026-05-07 | Shortened operator-facing XML mismatch message (`1090`) for better Tally UI readability while retaining detailed expected/received payload diagnostics in server logs. |
+| 2.1.6 | 2026-05-07 | Restored active runtime autoload to FTS v14 after XML envelope parser-compatibility patch validation on Tally adapter test flow. |
+| 2.1.5 | 2026-05-07 | Aligned FTS graceful-fail XML envelope header status to `STATUS=1` (while keeping business error codes/messages in `RETURNCODE` and `RETURNMESSAGE`) for Tally parser compatibility. |
+| 2.1.4 | 2026-05-07 | Switched active runtime autoload to Tally adapter (`api/Tally/v17`, `util/Tally/v4`) to validate successful XML return-payload capture behavior in Tally test flow. |
+| 2.1.3 | 2026-05-07 | Updated runtime documentation to reflect active FTS v14 baseline and documented code-maintenance standard for timestamped inline maintainer commentary and PHPDoc on newly introduced helper functions. |
+| 2.1.2 | 2026-05-07 | Documented XML request support for Tally ERP 9 and Tally Prime and added sample XML payloads for each implemented endpoint. |
 | 2.1.1 | 2026-04-26 | Clarified and enforced v13 credit-note reason behavior: `reasonCode` is normalized via mapping, while `reason` is preserved as ERP-provided free text (no reason-text mapping). |
 | 2.1.0 | 2026-04-26 | Promoted runtime baseline from v12 to v13 to isolate incoming change-set work while preserving v12 behavior as fallback. |
 | 2.0.9 | 2026-04-26 | Added runtime/operations documentation for graceful HTTP error JSON envelopes, GET health-check support on `/`, and automatic log rotation with trace-log split (`api-trace.log`, `util-trace.log`). |
@@ -28,11 +46,13 @@ Last updated: 2026-04-26
 This guide documents the API endpoints in the etaxware-api service.
 
 - Runtime adapter: `api/{adapter}/Api.php`
-- Current active adapter (config): `api/FTS/v13/Api.php`
+- Current active adapter (config): `api/Tally/v18/Api.php`
 - Route map source: `config/routes.ini`
 - Utility adapter: `util/{adapter}/Utilities.php`
-- Protocol: JSON over HTTP
+- Protocol: JSON and XML over HTTP
 - Route methods: POST for business endpoints, plus GET support on `/` for health/browser probing.
+
+For Tally ERP 9 and Tally Prime integrations, XML payloads are supported as first-class request bodies. JSON payloads remain supported for non-Tally integrations and tooling.
 
 ### 1.1 Business Context
 
@@ -206,6 +226,19 @@ Automatic rotation:
   - `log_rotate_max_files`
 - Rotated files use timestamp suffixes (for example `util-trace.log.YYYYMMDD-HHMMSS`).
 
+### 4.2.1 SmartLogger Routing Rules
+
+Use these rules as the canonical expected behavior for SmartLogger-enabled runtimes:
+
+- Payload trace content for new vouchers routes to `api-trace.log` and not to `api.log`.
+- Operational API messages (for example permission, version, and user-context messages) remain in `api.log`.
+- Utility high-volume request and response diagnostics route to `util-trace.log`.
+- Utility operational and status messages remain in `util.log`.
+
+Validation reference:
+
+- Rules above were validated against live stocktransfer requests on 2026-05-07 after the Tally v18/v5 SmartLogger rollout.
+
 ## 5. Endpoint Catalog
 
 ### 5.1 Routed endpoints from config/routes.ini
@@ -241,6 +274,49 @@ Automatic rotation:
 
 ### 5.2 Implemented endpoint details
 
+### 5.2.0 XML Quick Reference (Tally ERP 9 / Tally Prime)
+
+All XML requests use the root `<REQUEST>...</REQUEST>` and include the common envelope fields from section 3.1:
+`VERSION`, `APIKEY`, `ORGTIN`, `ERPUSER`, `WINDOWSUSER`, `IPADDRESS`, `MACADDRESS`, `SYSTEMNAME`.
+
+Important naming rule:
+
+- JSON technical field names and XML tag names may differ for some endpoints.
+- When names differ, they still represent the same business meaning.
+- The JSON technical name remains the canonical reference in parameter tables, while XML equivalents are shown in this section and in endpoint XML samples.
+
+JSON-to-XML semantic equivalence (known endpoint differences):
+
+| Endpoint | JSON technical field name(s) | XML equivalent tag/path | Same business meaning |
+| --- | --- | --- | --- |
+| `/batchstockin` | `INVENTORIES[]` | `DESTINATIONINVENTORIES/INVENTORY` | Batch destination stock line collection |
+| `/stocktransfer` | `SOURCEBRANCH` | `SOURCEINVENTORIES/INVENTORY/LOCATION` | Source branch |
+| `/stocktransfer` | `DESTBRANCH` | `DESTINATIONINVENTORIES/INVENTORY/LOCATION` | Destination branch |
+| `/stocktransfer` | `PRODUCTCODE`, `QTY` | `SOURCEINVENTORIES/INVENTORY/PRODUCTCODE`, `SOURCEINVENTORIES/INVENTORY/QTY` | Product and quantity to transfer |
+
+Endpoint-specific XML nodes:
+
+| Endpoint | Required endpoint-specific XML nodes | Common optional XML nodes |
+| --- | --- | --- |
+| `/` | None | None |
+| `/testapi` | None | None |
+| `/validatetin` | `TIN` | None |
+| `/checktaxpayer` | `TIN`, `COMMODITYCODE` | None |
+| `/currencyquery` | None | None |
+| `/uploadproduct` | `ITEMNAME`, `ITEMID`, `PRODUCTCODE`, `COMMODITYCODE`, `MEASUREUNITS`, `CURRENCY`, `UNITPRICE`, `TAXCODE` | `HASEXCISEDUTYFLAG`, `EXCISEDUTYCODE`, `HAVEPIECEUNITSFLAG`, `PIECEUNITSMEASUREUNIT`, `PIECEUNITPRICE`, `PACKAGESCALEVALUE`, `PIECESCALEVALUE`, `HSCODE`, `CUSTOMMEASUREUNIT`, `CUSTOMUNITPRICE`, `CUSTOMPACKAGESCALEDVALUE`, `CUSTOMSCALEDVALUE`, `CUSTOMWEIGHT` |
+| `/fetchproduct` | `PRODUCTCODE` | `ERPQTY` |
+| `/stockin` | `PRODUCTCODE`, `STOCKINTYPE`, `UNITPRICE`, `QTY` | `PRODUCTIONDATE`, `BATCHNUMBER`, `SUPPLIERTIN`, `SUPPLIERNAME` |
+| `/batchstockin` | `STOCKINTYPE`, `VOUCHERTYPE`, `VOUCHERTYPENAME`, `VOUCHERNUMBER`, `VOUCHERREF`, `DESTINATIONINVENTORIES/INVENTORY` (with `PRODUCTCODE`, `QTY`, `RATE`) | `INVENTORIES/INVENTORY` (legacy naming in some clients), `PRODUCTIONDATE`, `SUPPLIERTIN`, `SUPPLIERNAME` |
+| `/stockout` | `PRODUCTCODE`, `ADJUSTMENTTYPE`, `QTY` | `REMARKS`, `BATCHNUMBER` |
+| `/batchstockout` | `VOUCHERTYPE`, `VOUCHERTYPENAME`, `VOUCHERNUMBER`, `VOUCHERREF`, `INVENTORIES/INVENTORY` (with `PRODUCTCODE`, `QTY`) | `RATE` (inventory line), `ADJUSTMENTTYPE`, `REMARKS` |
+| `/stocktransfer` | `VOUCHERNUMBER`, `SOURCEINVENTORIES/INVENTORY` (with `PRODUCTCODE`, `QTY`, `LOCATION`), `DESTINATIONINVENTORIES/INVENTORY` (with `LOCATION`) | `PRODUCTCODE`, `SOURCEBRANCH`, `DESTBRANCH`, `QTY`, `REMARKS` (legacy/flat naming), `STOCKITEMNAME`, `RATE`, `VOUCHERREF`, `VOUCHERTYPE`, `VOUCHERTYPENAME` |
+| `/uploadinvoice` | `VOUCHERTYPE`, `VOUCHERTYPENAME`, `VOUCHERNUMBER`, `VOUCHERREF`, `CURRENCY`, `INDUSTRYCODE`, `BUYERLEGALNAME`, `BUYERCITIZENSHIP`, `BUYERTYPE`, `INVENTORIES/INVENTORY` | `PRICEVATINCLUSIVE`, `PROJECTID`, `PROJECTNAME`, `DELIVERYTERMCODE`, `NONRESIDENTFLAG` |
+| `/uploadcreditnote` | `VOUCHERTYPE`, `VOUCHERTYPENAME`, `VOUCHERNUMBER`, `VOUCHERREF`, `ORIVOUCHERNUMBER`, `REASONS/REASON` (`REASONCODE`, `REASON`), `INVENTORIES/INVENTORY` | None |
+| `/uploaddebitnote` | `VOUCHERTYPE`, `VOUCHERTYPENAME`, `VOUCHERNUMBER`, `VOUCHERREF`, `ORIVOUCHERNUMBER`, `REASONS/REASON` (`REASONCODE`, `REASON`), `INVENTORIES/INVENTORY` | None |
+| `/queryinvoice` | `VOUCHERNUMBER`, `VOUCHERREF`, `VOUCHERTYPE`, `VOUCHERTYPENAME` | None |
+| `/voidcreditnote` | `VOUCHERNUMBER`, `VOUCHERREF`, `VOUCHERTYPE`, `VOUCHERTYPENAME` | None |
+| `/sendmail` | `RECIPIENTEMAIL`, `BODY` | `RECIPIENTNAME`, `SUBJECT` |
+
 ### 5.2.1 Health and diagnostics
 
 #### GET or POST /
@@ -249,6 +325,21 @@ Automatic rotation:
 - Handler: `index()`
 - Typical success: `00`, `It Works!` (POST with valid standard envelope)
 - Browser/quick probe behavior: GET `/` without required request payload returns graceful JSON validation response (for example `1000: No parameters were sent!`) instead of framework error HTML.
+
+Sample XML payload (for POST):
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally Prime</SYSTEMNAME>
+</REQUEST>
+```
 
 Accepted parameters:
 
@@ -269,6 +360,21 @@ Returned fields:
 - Purpose: service health check (alternate)
 - Handler: `testapi()`
 - Typical success: `00`, `It Works!`
+
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally ERP 9</SYSTEMNAME>
+</REQUEST>
+```
 
 Accepted parameters:
 
@@ -296,6 +402,22 @@ Returned fields:
   - `NINBRN`, `LEGALNAME`, `BUSINESSNAME`, `CONTACTNUMBER`, `CONTACTEMAIL`, `ADDRESS`
 - Common business errors:
   - `-999` when TIN is missing
+
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally Prime</SYSTEMNAME>
+  <TIN>1017918269</TIN>
+</REQUEST>
+```
 
 Accepted parameters:
 
@@ -330,6 +452,23 @@ Returned fields:
   - `-999` missing TIN
   - `-998` missing commodity code
 
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally Prime</SYSTEMNAME>
+  <TIN>1017918269</TIN>
+  <COMMODITYCODE>101</COMMODITYCODE>
+</REQUEST>
+```
+
 Accepted parameters:
 
 | Technical name | Business name | Mandatory flag | Sample data |
@@ -354,6 +493,21 @@ Returned fields:
 - Endpoint-specific fields: none beyond common auth/audit metadata
 - Success data:
   - Dynamic object map, example `{ "UGX": "1", "USD": "..." }`
+
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally ERP 9</SYSTEMNAME>
+</REQUEST>
+```
 
 Accepted parameters:
 
@@ -387,6 +541,29 @@ Returned fields:
   - `ISTAXEXEMPT`, `ISZERORATED`, `TAXRATE`, `STATUS`, `SOURCE`, `EXCLUSION`, `PRODID`, `SERVICEMARK`
 - Common business errors:
   - `2398` when `TAXCODE` is missing
+
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally Prime</SYSTEMNAME>
+  <ITEMNAME>Sample Product</ITEMNAME>
+  <ITEMID>SP-100</ITEMID>
+  <PRODUCTCODE>SP-100</PRODUCTCODE>
+  <COMMODITYCODE>101</COMMODITYCODE>
+  <MEASUREUNITS>Pcs</MEASUREUNITS>
+  <CURRENCY>UGX</CURRENCY>
+  <UNITPRICE>1000</UNITPRICE>
+  <TAXCODE>01</TAXCODE>
+</REQUEST>
+```
 
 Accepted parameters:
 
@@ -426,6 +603,23 @@ Returned fields:
   - `ERPQTY` (optional; normalized to `0` when omitted)
 - Response `data` includes product tax/status indicators similar to uploadproduct response.
 
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally Prime</SYSTEMNAME>
+  <PRODUCTCODE>SP-100</PRODUCTCODE>
+  <ERPQTY>0</ERPQTY>
+</REQUEST>
+```
+
 Accepted parameters:
 
 | Technical name | Business name | Mandatory flag | Sample data |
@@ -460,6 +654,27 @@ Returned fields:
 - Mapping behavior:
   - `STOCKINTYPE` is normalized through stock-in type mappings before request dispatch and before local stock-adjustment persistence.
 
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally ERP 9</SYSTEMNAME>
+  <PRODUCTCODE>SP-100</PRODUCTCODE>
+  <STOCKINTYPE>101</STOCKINTYPE>
+  <UNITPRICE>1000</UNITPRICE>
+  <QTY>10</QTY>
+  <SUPPLIERTIN>1017918269</SUPPLIERTIN>
+  <SUPPLIERNAME>Sample Supplier</SUPPLIERNAME>
+</REQUEST>
+```
+
 Accepted parameters:
 
 | Technical name | Business name | Mandatory flag | Sample data |
@@ -488,13 +703,42 @@ Returned fields:
 - Permission: `STOCKIN`
 - Required fields:
   - `STOCKINTYPE`, `VOUCHERTYPE`, `VOUCHERTYPENAME`, `VOUCHERNUMBER`, `VOUCHERREF`
-  - `INVENTORIES[]` with per-line `PRODUCTCODE`, `QTY`, `RATE`
+  - `DESTINATIONINVENTORIES[]` with per-line `PRODUCTCODE`, `QTY`, `RATE`
+- Compatibility fields:
+  - `INVENTORIES[]` (legacy naming in some clients; equivalent intent to destination inventory lines)
 - Conditional fields:
   - `PRODUCTIONDATE` used when `STOCKINTYPE == 103`
   - For non-103 types: optional `SUPPLIERTIN`, `SUPPLIERNAME`
 - Behavior note:
   - Services (`serviceMark == 101`) are skipped in batch stockin.
   - `STOCKINTYPE` is normalized through stock-in type mappings before request dispatch and before local stock-adjustment persistence.
+
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally Prime</SYSTEMNAME>
+  <STOCKINTYPE>101</STOCKINTYPE>
+  <VOUCHERTYPE>Purchase</VOUCHERTYPE>
+  <VOUCHERTYPENAME>Purchase</VOUCHERTYPENAME>
+  <VOUCHERNUMBER>GRN-001</VOUCHERNUMBER>
+  <VOUCHERREF>ERP-GRN-001</VOUCHERREF>
+  <DESTINATIONINVENTORIES>
+    <INVENTORY>
+      <PRODUCTCODE>SP-100</PRODUCTCODE>
+      <QTY>10</QTY>
+      <RATE>1000</RATE>
+    </INVENTORY>
+  </DESTINATIONINVENTORIES>
+</REQUEST>
+```
 
 Accepted parameters:
 
@@ -506,7 +750,8 @@ Accepted parameters:
 | VOUCHERTYPENAME | Voucher type display name | Yes | `Purchase` |
 | VOUCHERNUMBER | Voucher number | Yes | `GRN-001` |
 | VOUCHERREF | Voucher reference | Yes | `ERP-GRN-001` |
-| INVENTORIES[] | Inventory line collection | Yes | `[{"PRODUCTCODE":"SP-100","QTY":"10","RATE":"1000"}]` |
+| DESTINATIONINVENTORIES[] | Destination inventory line collection | Yes | `[{"PRODUCTCODE":"SP-100","QTY":"10","RATE":"1000"}]` |
+| INVENTORIES[] | Inventory line collection (legacy naming) | Conditional | `[{"PRODUCTCODE":"SP-100","QTY":"10","RATE":"1000"}]` |
 | PRODUCTIONDATE | Production date (when `STOCKINTYPE == 103`) | Conditional | `2026-04-25` |
 | SUPPLIERTIN | Supplier TIN | No | `1017918269` |
 | SUPPLIERNAME | Supplier name | No | `Sample Supplier` |
@@ -531,6 +776,25 @@ Returned fields:
   - Unit price is resolved from product pricing (`purchaseprice`, fallback `unitprice`) and is no longer defaulted to `1`.
 - Mapping behavior:
   - `ADJUSTMENTTYPE` is normalized through stock-adjustment mappings before request dispatch and before local stock-adjustment persistence.
+
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally ERP 9</SYSTEMNAME>
+  <PRODUCTCODE>SP-100</PRODUCTCODE>
+  <ADJUSTMENTTYPE>102</ADJUSTMENTTYPE>
+  <QTY>1</QTY>
+  <REMARKS>Damaged item</REMARKS>
+</REQUEST>
+```
 
 Accepted parameters:
 
@@ -565,6 +829,34 @@ Returned fields:
 - Mapping behavior:
   - `ADJUSTMENTTYPE` is normalized through stock-adjustment mappings before request dispatch and before local stock-adjustment persistence.
 
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally Prime</SYSTEMNAME>
+  <VOUCHERTYPE>Adjustment</VOUCHERTYPE>
+  <VOUCHERTYPENAME>Adjustment</VOUCHERTYPENAME>
+  <VOUCHERNUMBER>ADJ-001</VOUCHERNUMBER>
+  <VOUCHERREF>ERP-ADJ-001</VOUCHERREF>
+  <ADJUSTMENTTYPE>102</ADJUSTMENTTYPE>
+  <REMARKS>Periodic correction</REMARKS>
+  <INVENTORIES>
+    <INVENTORY>
+      <PRODUCTCODE>SP-100</PRODUCTCODE>
+      <QTY>1</QTY>
+      <RATE>1000</RATE>
+    </INVENTORY>
+  </INVENTORIES>
+</REQUEST>
+```
+
 Accepted parameters:
 
 | Technical name | Business name | Mandatory flag | Sample data |
@@ -591,23 +883,67 @@ Returned fields:
 - Purpose: transfer stock between branches
 - Permission: `TRANSFERPRODUCTSTOCK`
 - Required fields:
-  - `PRODUCTCODE`, `SOURCEBRANCH`, `DESTBRANCH`, `QTY`
+  - `VOUCHERNUMBER`
+  - `SOURCEINVENTORIES[]` with per-line `PRODUCTCODE`, `QTY`, `LOCATION`
+  - `DESTINATIONINVENTORIES[]` with per-line `LOCATION`
+- Compatibility fields:
+  - `PRODUCTCODE`, `SOURCEBRANCH`, `DESTBRANCH`, `QTY` (legacy/flat naming kept for documentation continuity)
 - Optional fields:
-  - `REMARKS`
+  - `REMARKS`, `STOCKITEMNAME`, `RATE`, `VOUCHERREF`, `VOUCHERTYPE`, `VOUCHERTYPENAME` (logged/persisted but not required)
+- Common business errors:
+  - `-999` when `VOUCHERNUMBER` is missing
 - Mapping behavior:
-  - `SOURCEBRANCH` and `DESTBRANCH` accept ERP-facing branch names/codes and are normalized to mapped branch identifiers before transfer and persistence.
-  - `PRODUCTCODE` is resolved to mapped product code (when available) before transfer and persistence.
+  - Source/destination `LOCATION` values accept ERP-facing branch names/codes and are normalized to mapped branch identifiers before transfer and persistence.
+  - `PRODUCTCODE` lines are resolved to mapped product code (when available) before transfer and persistence.
+
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally Prime</SYSTEMNAME>
+  <SOURCEINVENTORIES>
+    <INVENTORY>
+      <STOCKITEMNAME>Sample Product</STOCKITEMNAME>
+      <PRODUCTCODE>SP-100</PRODUCTCODE>
+      <QTY>5</QTY>
+      <RATE>1000</RATE>
+      <LOCATION>Kampala HQ</LOCATION>
+    </INVENTORY>
+  </SOURCEINVENTORIES>
+  <DESTINATIONINVENTORIES>
+    <INVENTORY>
+      <STOCKITEMNAME>Sample Product</STOCKITEMNAME>
+      <PRODUCTCODE>SP-100</PRODUCTCODE>
+      <QTY>5</QTY>
+      <RATE>1000</RATE>
+      <LOCATION>Jinja</LOCATION>
+    </INVENTORY>
+  </DESTINATIONINVENTORIES>
+</REQUEST>
+```
 
 Accepted parameters:
 
 | Technical name | Business name | Mandatory flag | Sample data |
 | --- | --- | --- | --- |
 | See section 3.1 common fields | Authentication and audit metadata (applies to all endpoints) | Yes | `VERSION`, `APIKEY`, `ORGTIN`, `ERPUSER`, `WINDOWSUSER`, `IPADDRESS`, `MACADDRESS`, `SYSTEMNAME` |
-| PRODUCTCODE | Product code | Yes | `SP-100` |
-| SOURCEBRANCH | Source branch code/name | Yes | `Kampala HQ` |
-| DESTBRANCH | Destination branch code/name | Yes | `Jinja` |
-| QTY | Quantity to transfer | Yes | `5` |
-| REMARKS | Transfer remarks | No | `Branch restock` |
+| SOURCEINVENTORIES[] | Source inventory collection | Yes | `[{"PRODUCTCODE":"SP-100","QTY":"5","LOCATION":"Kampala HQ"}]` |
+| DESTINATIONINVENTORIES[] | Destination inventory collection | Yes | `[{"LOCATION":"Jinja"}]` |
+| VOUCHERNUMBER | Voucher number used for duplicate-upload guard and stock-transfer log identity | Yes | `ST-001` |
+| PRODUCTCODE | Product code (legacy/flat naming) | Conditional | `SP-100` |
+| SOURCEBRANCH | Source branch code/name (legacy/flat naming) | Conditional | `Kampala HQ` |
+| DESTBRANCH | Destination branch code/name (legacy/flat naming) | Conditional | `Jinja` |
+| QTY | Quantity to transfer (legacy/flat naming) | Conditional | `5` |
+| REMARKS | Transfer remarks (legacy/flat naming) | No | `Branch restock` |
+| STOCKITEMNAME | Item name on inventory rows | No | `Sample Product` |
+| RATE | Unit rate on inventory rows | No | `1000` |
 
 Returned fields:
 
@@ -635,6 +971,43 @@ Returned fields:
 - Notes:
   - Buyer TIN is validated when provided.
   - Fees mapping and excise logic may alter tax line composition.
+
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally Prime</SYSTEMNAME>
+  <VOUCHERTYPE>Invoice</VOUCHERTYPE>
+  <VOUCHERTYPENAME>Invoice</VOUCHERTYPENAME>
+  <VOUCHERNUMBER>INV-SAMPLE-001</VOUCHERNUMBER>
+  <VOUCHERREF>INVREF-SAMPLE-001</VOUCHERREF>
+  <CURRENCY>UGX</CURRENCY>
+  <INDUSTRYCODE>101</INDUSTRYCODE>
+  <BUYERLEGALNAME>Sample Buyer</BUYERLEGALNAME>
+  <BUYERCITIZENSHIP>UG</BUYERCITIZENSHIP>
+  <BUYERTYPE>101</BUYERTYPE>
+  <PRICEVATINCLUSIVE>NO</PRICEVATINCLUSIVE>
+  <INVENTORIES>
+    <INVENTORY>
+      <PRODUCTCODE>EXC_TEST_3</PRODUCTCODE>
+      <QTY>1</QTY>
+      <BILLEDQTY>1</BILLEDQTY>
+      <RATE>1000</RATE>
+      <AMOUNT>1000</AMOUNT>
+      <TAXCODE>01</TAXCODE>
+      <BUOM>Pcs</BUOM>
+      <COMMODITYCATEGORYCODE>101</COMMODITYCATEGORYCODE>
+    </INVENTORY>
+  </INVENTORIES>
+</REQUEST>
+```
 
 Accepted parameters:
 
@@ -685,6 +1058,41 @@ Returned fields:
   - `invoiceindustrycode` via industry mapping
   - `reasoncode` via credit/debit reason mapping
 
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally Prime</SYSTEMNAME>
+  <VOUCHERTYPE>Credit Note</VOUCHERTYPE>
+  <VOUCHERTYPENAME>Credit Note</VOUCHERTYPENAME>
+  <VOUCHERNUMBER>CN-001</VOUCHERNUMBER>
+  <VOUCHERREF>ERP-CN-001</VOUCHERREF>
+  <ORIVOUCHERNUMBER>INV-SAMPLE-001</ORIVOUCHERNUMBER>
+  <REASONS>
+    <REASON>
+      <REASONCODE>101</REASONCODE>
+      <REASON>Return</REASON>
+    </REASON>
+  </REASONS>
+  <INVENTORIES>
+    <INVENTORY>
+      <PRODUCTCODE>EXC_TEST_3</PRODUCTCODE>
+      <QTY>1</QTY>
+      <RATE>1000</RATE>
+      <AMOUNT>1000</AMOUNT>
+      <TAXCODE>01</TAXCODE>
+    </INVENTORY>
+  </INVENTORIES>
+</REQUEST>
+```
+
 Accepted parameters:
 
 | Technical name | Business name | Mandatory flag | Sample data |
@@ -720,6 +1128,41 @@ Returned fields:
 - Notable behavior:
   - Maintains current discount-flag behavior.
   - Performs original invoice reconciliation before upload.
+
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally ERP 9</SYSTEMNAME>
+  <VOUCHERTYPE>Debit Note</VOUCHERTYPE>
+  <VOUCHERTYPENAME>Debit Note</VOUCHERTYPENAME>
+  <VOUCHERNUMBER>DN-001</VOUCHERNUMBER>
+  <VOUCHERREF>ERP-DN-001</VOUCHERREF>
+  <ORIVOUCHERNUMBER>INV-SAMPLE-001</ORIVOUCHERNUMBER>
+  <REASONS>
+    <REASON>
+      <REASONCODE>101</REASONCODE>
+      <REASON>Price adjustment</REASON>
+    </REASON>
+  </REASONS>
+  <INVENTORIES>
+    <INVENTORY>
+      <PRODUCTCODE>EXC_TEST_3</PRODUCTCODE>
+      <QTY>1</QTY>
+      <RATE>1000</RATE>
+      <AMOUNT>1000</AMOUNT>
+      <TAXCODE>01</TAXCODE>
+    </INVENTORY>
+  </INVENTORIES>
+</REQUEST>
+```
 
 Accepted parameters:
 
@@ -761,6 +1204,25 @@ Returned fields:
 - Unsupported voucher type behavior:
   - Returns `1006`, `Unsupported voucher type`
 
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally Prime</SYSTEMNAME>
+  <VOUCHERNUMBER>INV-SAMPLE-001</VOUCHERNUMBER>
+  <VOUCHERREF>INVREF-SAMPLE-001</VOUCHERREF>
+  <VOUCHERTYPE>Invoice</VOUCHERTYPE>
+  <VOUCHERTYPENAME>Invoice</VOUCHERTYPENAME>
+</REQUEST>
+```
+
 Accepted parameters:
 
 | Technical name | Business name | Mandatory flag | Sample data |
@@ -796,6 +1258,25 @@ Returned fields:
   - `00` on success
   - `99` when credit note is not found locally for the ERP id
 
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally ERP 9</SYSTEMNAME>
+  <VOUCHERNUMBER>CN-001</VOUCHERNUMBER>
+  <VOUCHERREF>ERP-CN-001</VOUCHERREF>
+  <VOUCHERTYPE>Credit Note</VOUCHERTYPE>
+  <VOUCHERTYPENAME>Credit Note</VOUCHERTYPENAME>
+</REQUEST>
+```
+
 Accepted parameters:
 
 | Technical name | Business name | Mandatory flag | Sample data |
@@ -826,6 +1307,25 @@ Returned fields:
   - `00` success
   - `500` missing email/body
   - `300` SMTP send failure
+
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>1017918269</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally Prime</SYSTEMNAME>
+  <RECIPIENTNAME>Developer</RECIPIENTNAME>
+  <RECIPIENTEMAIL>developer@example.com</RECIPIENTEMAIL>
+  <SUBJECT>Test message</SUBJECT>
+  <BODY>Hello from eTaxWare API</BODY>
+</REQUEST>
+```
 
 Accepted parameters:
 

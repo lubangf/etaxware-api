@@ -2,12 +2,11 @@
 /**
  * @name Utilities.php
  * @desc This file is part of the etaxware-api app.
- * @date: 09-02-2024
+ * @date: 07-05-2026
  * @file: Utilities.php
- * @path: ./util/Utilities.php
+ * @path: ./util/Tally/v4/Utilities.php
  * @author: francis lubanga <francis.lubanga@gmail.com>
- * @copyright  (C) d'alytics - All Rights Reserved
- * @version    2.0.0
+ * @version    4.0.0
  */
 
 Class Utilities{
@@ -280,7 +279,7 @@ Class Utilities{
          * 1. If the OVERRIDE_TAXRATE_FLAG is set to 1, then check if the ProductCode is part of the list in tblproductoverridelist
          * 2. If the ProductCode exists in the list, then set $existsinlist to TRUE
          * 2(a). If the $existsinlist is TRUE, set the rate to STANDARD
-         * 2(a). If the $existsinlist is FALSE, call getinvoicetaxrate($industrycode, $buyertype, $deemedflag, $productcode)
+         * 2(b). If the $existsinlist is FALSE, call getinvoicetaxrate($industrycode, $buyertype, $deemedflag, $productcode)
          * 3. Has the TIN been supplied?
          * 4(a). If TIN is not supplied, then do the following;
          * 4(a)(i). If the $existsinlist is TRUE, set the rate to STANDARD
@@ -710,6 +709,8 @@ Class Utilities{
                         $obj['exciseunit'] = empty($obj['exciseunit'])? 'NULL' : $obj['exciseunit'];
                         $obj['excisecurrency'] = empty($obj['excisecurrency'])? '' : $obj['excisecurrency'];
                         $obj['exciseratename'] = empty($obj['exciseratename'])? '' : $obj['exciseratename'];
+                        $obj['vatProjectId'] = empty($obj['vatProjectId'])? '' : $obj['vatProjectId'];
+                        $obj['vatProjectName'] = empty($obj['exciseratename'])? '' : $obj['vatProjectName'];
                         
                         $sql = 'INSERT INTO tblgooddetails (
                                     groupid,
@@ -743,6 +744,8 @@ Class Utilities{
                                     exciseratename,
                                     taxcategory,
                                     unitofmeasurename,
+                                    projectId,
+                                    projectName,
                                     inserteddt,
                                     insertedby,
                                     modifieddt,
@@ -779,6 +782,8 @@ Class Utilities{
                                                                                                                                             . $obj['exciseratename'] . '", "'
                                                                                                                                                 . $obj['taxdisplaycategory'] . '", "'
                                                                                                                                                     . $obj['unitofmeasurename'] . '", "'
+                                                                                                                                                    . $obj['vatProjectId'] . '", "'
+                                                                                                                                                    . $obj['vatProjectName'] . '", "'
                                                                                                                                                         . date('Y-m-d H:i:s') . '", '
                                                                                                                                                             . $userid . ', "'
                                                                                                                                                                 . date('Y-m-d H:i:s') . '", '
@@ -1649,6 +1654,8 @@ Class Utilities{
                                                                                                                                                                             $obj['exciseunit'] = empty($obj['exciseunit'])? 'NULL' : $obj['exciseunit'];
                                                                                                                                                                             $obj['excisecurrency'] = empty($obj['excisecurrency'])? '' : $obj['excisecurrency'];
                                                                                                                                                                             $obj['exciseratename'] = empty($obj['exciseratename'])? '' : $obj['exciseratename'];
+                                                                                                                                                                            $obj['vatProjectId'] = empty($obj['vatProjectId'])? '' : $obj['vatProjectId'];
+                                                                                                                                                                            $obj['vatProjectName'] = empty($obj['exciseratename'])? '' : $obj['vatProjectName'];
                                                                                                                                                                             
                                                                                                                                                                             $sql = 'INSERT INTO tblgooddetails (
                                     groupid,
@@ -1682,6 +1689,8 @@ Class Utilities{
                                     exciseratename,
                                     taxcategory,
                                     unitofmeasurename,
+                                    projectId,
+                                    projectName,
                                     inserteddt,
                                     insertedby,
                                     modifieddt,
@@ -1718,6 +1727,8 @@ Class Utilities{
                                                                                                                                                                                                                                                                                                 . $obj['exciseratename'] . '", "'
                                                                                                                                                                                                                                                                                                     . $obj['taxdisplaycategory'] . '", "'
                                                                                                                                                                                                                                                                                                         . $obj['unitofmeasurename'] . '", "'
+                                                                                                                                                                                                                                                                                                        . $obj['vatProjectId'] . '", "'
+                                                                                                                                                                                                                                                                                                            . $obj['vatProjectName'] . '", "'
                                                                                                                                                                                                                                                                                                             . date('Y-m-d H:i:s') . '", '
                                                                                                                                                                                                                                                                                                                 . $userid . ', "'
                                                                                                                                                                                                                                                                                                                     . date('Y-m-d H:i:s') . '", '
@@ -2133,6 +2144,8 @@ Class Utilities{
                                                                                                                                                                             $obj['excisecurrency'] = empty($obj['excisecurrency'])? '' : $obj['excisecurrency'];
                                                                                                                                                                             $obj['exciseratename'] = empty($obj['exciseratename'])? '' : $obj['exciseratename'];
                                                                                                                                                                             $obj['ordernumber'] = empty($obj['ordernumber'])? $i : $obj['ordernumber'];
+                                                                                                                                                                            $obj['vatProjectId'] = empty($obj['vatProjectId'])? '' : $obj['vatProjectId'];
+                                                                                                                                                                            $obj['vatProjectName'] = empty($obj['exciseratename'])? '' : $obj['vatProjectName'];
                                                                                                                                                                             
                                                                                                                                                                             $sql = 'INSERT INTO tblgooddetails (
                                     groupid,
@@ -2166,6 +2179,8 @@ Class Utilities{
                                     exciseratename,
                                     taxcategory,
                                     unitofmeasurename,
+                                    projectId,
+                                    projectName,
                                     inserteddt,
                                     insertedby,
                                     modifieddt,
@@ -2202,6 +2217,8 @@ Class Utilities{
                                                                                                                                                                                                                                                                                                 . $obj['exciseratename'] . '", "'
                                                                                                                                                                                                                                                                                                     . $obj['taxdisplaycategory'] . '", "'
                                                                                                                                                                                                                                                                                                         . $obj['unitofmeasurename'] . '", "'
+                                                                                                                                                                                                                                                                                                        . $obj['vatProjectId'] . '", "'
+                                                                                                                                                                                                                                                                                                            . $obj['vatProjectName'] . '", "'
                                                                                                                                                                                                                                                                                                             . date('Y-m-d H:i:s') . '", '
                                                                                                                                                                                                                                                                                                                 . $userid . ', "'
                                                                                                                                                                                                                                                                                                                     . date('Y-m-d H:i:s') . '", '
@@ -3411,6 +3428,37 @@ Class Utilities{
     
     
     /**
+     * @name maphscode
+     * @desc return the standard code for an HS code
+     * @return string
+     * @param $no string
+     *
+     */
+    function maphscode($code){
+        /**
+         * 1. Cleanup the code
+         * 2. Search the HS code table for the equivalent
+         */
+        $this->logger->write("Utilities : maphscode() : The raw code is " . $code, 'r');
+        $value = '';
+        
+        $code = strtoupper(trim($code));
+        
+        $code_check = new DB\SQL\Mapper($this->db, 'tblhscodes');
+        $code_check->load(array('UPPER(erpcode)=?', $code));
+        $this->logger->write($this->db->log(TRUE), 'r');
+        
+        if($code_check->dry ()){
+            $this->logger->write("Utilities : maphscode() : The HS code does not exist or is not mapped", 'r');
+        } else {
+            $value = $code_check->code;
+        }
+        
+        $this->logger->write("Utilities : maphscode() : The rate code is " . $value, 'r');
+        return $value;
+    }
+    
+    /**
      * @name mapindustrycode
      * @desc return the standard code for an industry
      * @return string
@@ -3702,7 +3750,7 @@ Class Utilities{
     }
     
     /**
-     * @name mapbuyertypecodemapbuyertypecode
+     * @name mapbuyertypecode
      * @desc return the standard code for a buyer type
      * @return string
      * @param $code string
@@ -3732,6 +3780,37 @@ Class Utilities{
         return $value;
     }
     
+    
+    /**
+     * @name mapdeliverytermcode
+     * @desc return the standard code for a delivery term code
+     * @return string
+     * @param $code string
+     *
+     */
+    function mapdeliverytermcode($code){
+        /**
+         * 1. Cleanup the industry code
+         * 2. Search the industry table for the equivalent
+         */
+        $this->logger->write("Utilities : mapdeliverytermcode() : The raw delivery term code is " . $code, 'r');
+        $value = '';
+        
+        $code = strtoupper(trim($code));
+        
+        $code_check = new DB\SQL\Mapper($this->db, 'tbldeliverytermscodes');
+        $code_check->load(array('UPPER(erpcode)=?', $code));
+        $this->logger->write($this->db->log(TRUE), 'r');
+        
+        if($code_check->dry ()){
+            $this->logger->write("Utilities : mapdeliverytermcode() : The delivery term code does not exist or is not mapped", 'r');
+        } else {
+            $value = $code_check->code;
+        }
+        
+        $this->logger->write("Utilities : mapdeliverytermcode() : The delivery term code is " . $value, 'r');
+        return $value;
+    }
     
     /**
      * @name removecommas
@@ -3859,6 +3938,14 @@ Class Utilities{
             $product['taxrate'] = (trim($product['taxrate']) == ''? 'NULL' : $product['taxrate']);
             $product['serviceMark'] = (trim($product['serviceMark']) == ''? 'NULL' : $product['serviceMark']);
             
+            $product['goodsTypeCode'] = (trim($product['goodsTypeCode']) == ''? 'NULL' : $product['goodsTypeCode']);
+            $product['hsCode'] = (trim($product['hsCode']) == ''? 'NULL' : $product['hsCode']);
+            $product['customsmeasureunit'] = (trim($product['customsmeasureunit']) == ''? 'NULL' : $product['customsmeasureunit']);
+            $product['customsunitprice'] = (trim($product['customsunitprice']) == ''? 'NULL' : $product['customsunitprice']);
+            $product['packagescaledvaluecustoms'] = (trim($product['packagescaledvaluecustoms']) == ''? 'NULL' : $product['packagescaledvaluecustoms']);
+            $product['customsscaledvalue'] = (trim($product['customsscaledvalue']) == ''? 'NULL' : $product['customsscaledvalue']);
+            $product['weight'] = (trim($product['weight']) == ''? 'NULL' : $product['weight']);
+            
             $userid = empty($userid) || trim($userid) == ''? $this->userid : $userid;
             
             $sql = 'INSERT INTO tblproductdetails (
@@ -3892,6 +3979,13 @@ Class Utilities{
                                     taxrate,
                                     haveotherunit,
                                     serviceMark,
+                                    goodsTypeCode,
+                                    hsCode,
+                                    customsmeasureunit,
+                                    customsunitprice,
+                                    packagescaledvaluecustoms,
+                                    customsscaledvalue,
+                                    weight,
                                     inserteddt,
                                     insertedby,
                                     modifieddt,
@@ -3926,7 +4020,14 @@ Class Utilities{
                                                                                                                         . $product['statuscode'] . ', '
                                                                                                                             . $product['taxrate'] . ', '
                                                                                                                                 . $product['haveotherunit'] . ', '
-                                                                                                                                    . $product['serviceMark'] . ', "'
+                                                                                                                                    . $product['serviceMark'] . ', '
+                                                                                                                                    . $product['goodsTypeCode'] . ', "'
+                                                                                                                                    . $product['hsCode'] . '", "'
+                                                                                                                                    . $product['customsmeasureunit'] . '", '
+                                                                                                                                    . $product['customsunitprice'] . ', '
+                                                                                                                                    . $product['packagescaledvaluecustoms'] . ', '
+                                                                                                                                    . $product['customsscaledvalue'] . ', '
+                                                                                                                                    . $product['weight'] . ', "'
                                                                                                                                     . date('Y-m-d H:i:s') . '", '
                                                                                                                                         . $userid . ', "'
                                                                                                                                             . date('Y-m-d H:i:s') . '", '
@@ -3981,6 +4082,14 @@ Class Utilities{
             $product['taxrate'] = (trim($product['taxrate']) == ''? 'NULL' : $product['taxrate']);
             $product['serviceMark'] = (trim($product['serviceMark']) == ''? 'NULL' : $product['serviceMark']);
             
+            $product['goodsTypeCode'] = (trim($product['goodsTypeCode']) == ''? 'NULL' : $product['goodsTypeCode']);
+            $product['hsCode'] = (trim($product['hsCode']) == ''? 'NULL' : $product['hsCode']);
+            $product['customsmeasureunit'] = (trim($product['customsmeasureunit']) == ''? 'NULL' : $product['customsmeasureunit']);
+            $product['customsunitprice'] = (trim($product['customsunitprice']) == ''? 'NULL' : $product['customsunitprice']);
+            $product['packagescaledvaluecustoms'] = (trim($product['packagescaledvaluecustoms']) == ''? 'NULL' : $product['packagescaledvaluecustoms']);
+            $product['customsscaledvalue'] = (trim($product['customsscaledvalue']) == ''? 'NULL' : $product['customsscaledvalue']);
+            $product['weight'] = (trim($product['weight']) == ''? 'NULL' : $product['weight']);
+            
             $userid = empty($userid) || trim($userid) == ''? $this->userid : $userid;
             
             $sql = 'UPDATE tblproductdetails SET 
@@ -4013,6 +4122,13 @@ Class Utilities{
                                     taxrate = ' . $product['taxrate'] . ',
                                     erpquantity = ' . $product['erpquantity'] . ',
                                     haveotherunit = ' . $product['haveotherunit'] . ',
+                                    goodsTypeCode = ' . $product['goodsTypeCode'] . ',
+                                    hsCode = "' . $product['hsCode'] . '",
+                                    customsmeasureunit = "' . $product['customsmeasureunit'] . '",
+                                    customsunitprice = ' . $product['customsunitprice'] . ',
+                                    packagescaledvaluecustoms = ' . $product['packagescaledvaluecustoms'] . ',
+                                    customsscaledvalue = ' . $product['customsscaledvalue'] . ',
+                                    weight = ' . $product['weight'] . ',
                                     modifieddt = "' .  date('Y-m-d H:i:s') . '", 
                                     modifiedby = ' . $userid  . ' 
                                     WHERE TRIM(code) = "' . addslashes($product['code']) . '"';
@@ -4622,10 +4738,22 @@ Class Utilities{
 	                'pieceMeasureUnit' => $product['piecemeasureunit'],
 	                'havePieceUnit' => $product['havepieceunit'],
 	                'pieceUnitPrice' => empty($product['pieceunitprice'])? '' : $product['pieceunitprice'],
-	                'packageScaledValue' => empty($product['packagescaledvalue'])? '' : $product['packagescaledvalue'],
-	                'pieceScaledValue' => empty($product['piecescaledvalue'])? '' : $product['piecescaledvalue'],
+	                'packageScaledValue' => empty($product['packagescaledvalue'])? '' : round($product['packagescaledvalue']),
+	                'pieceScaledValue' => empty($product['piecescaledvalue'])? '' : round($product['piecescaledvalue']),
 	                'exciseDutyCode' => $product['excisedutylist'],
 	                'haveOtherUnit' => empty($product['haveotherunit'])? '' : $product['haveotherunit'],
+	                'goodsTypeCode' => empty($product['goodsTypeCode'])? '101' : $product['goodsTypeCode'],
+	                /**
+	                 * Date: 2025-12-04
+	                 * Author: Francis Lubanga <francis.lubanga@gmail.com>
+	                 * Desc: Temporarily suspend the sending of the commodityGoodsExtendEntity to EFRIS
+	                 */
+	                /*'commodityGoodsExtendEntity' => array(
+	                    'customsMeasureUnit' => empty($product['customsmeasureunit'])? '' : $product['customsmeasureunit'],
+	                    'customsUnitPrice' => empty($product['customsunitprice'])? '' : $product['customsunitprice'],
+	                    'packageScaledValueCustoms' => empty($product['packagescaledvaluecustoms'])? '' : round($product['packagescaledvaluecustoms']),
+	                    'customsScaledValue' => empty($product['customsscaledvalue'])? '' : round($product['customsscaledvalue'])
+	                ),*/
 	                'goodsOtherUnits' => $otherunits
 	            )
 	        );
@@ -5718,15 +5846,46 @@ Class Utilities{
 	        return $content;
 	    }
 	}
+	
+	/**
+	 * @name mapbranchcode
+	 * @desc return the URA branch Id of branches
+	 * @return string
+	 * @param $code string
+	 *
+	 */
+	function mapbranchcode($code){
+	    /**
+	     * 1. Cleanup the branch code
+	     * 2. Search the branch table for the equivalent
+	     */
+	    $this->logger->write("Utilities : mapbranchcode() : The raw branch is " . $code, 'r');
+	    $value = '';
+	    
+	    $code = strtoupper(trim($code));
+	    
+	    $code_check = new DB\SQL\Mapper($this->db, 'tblbranches');
+	    $code_check->load(array('UPPER(erpcode)=?', $code));
+	    $this->logger->write($this->db->log(TRUE), 'r');
+	    
+	    if($code_check->dry ()){
+	        $this->logger->write("Utilities : mapbranchcode() : The branch code does not exist or is not mapped", 'r');
+	    } else {
+	        $value = $code_check->uraid;
+	    }
+	    
+	    $this->logger->write("Utilities : mapbranchcode() : The branch id is " . $value, 'r');
+	    return $value;
+	}
 
 	/**
 	 * @name transferproductstock
 	 * @desc Transfer stock of a product from EFRIS
 	 * @return JSON-encoded object
-	 * @param $userid int, $product array, $sourcebranch string, $destinationbranch string, $qty float, $remarks string
+	 * @param $userid int, $sourcebranch string, $destbranch string, $s_goods array
 	 *
 	 */
-	function transferproductstock($userid, $product, $sourcebranch, $destinationbranch, $qty=0, $remarks=''){
+	function transferproductstock($userid, $sourcebranch, $destinationbranch, $s_goods){
 	    $web = \Web::instance();
 	    $url = $this->appsettings['EFRIS_ENDPOINT'];//api endpoint
 	    $content = json_encode(new stdClass);// create an empty JSON
@@ -5744,13 +5903,18 @@ Class Utilities{
 	    $this->logger->write("Utilities : transferproductstock() : The user id is " . $userid, 'r');
 	    
 	    if (trim($sourcebranch) == '' || empty($sourcebranch)) {
-	        return json_encode(array('returnCode' => '999', 'returnMessage' => 'Unknown Error'));
+	        return json_encode(array('returnCode' => '999', 'returnMessage' => 'The source branch is empty.'));
 	        $this->logger->write("Utilities : transferproductstock() : The source branch is empty.", 'r');
 	    }
 	    
 	    if (trim($destinationbranch) == '' || empty($destinationbranch)) {
-	        return json_encode(array('returnCode' => '999', 'returnMessage' => 'Unknown Error'));
+	        return json_encode(array('returnCode' => '999', 'returnMessage' => 'The destination branch is empty.'));
 	        $this->logger->write("Utilities : transferproductstock() : The destination branch is empty.", 'r');
+	    }
+	    
+	    if (empty($s_goods)) {
+	        return json_encode(array('returnCode' => '999', 'returnMessage' => 'There are no goods supplied.'));
+	        $this->logger->write("Utilities : transferproductstock() : There are no goods supplied.", 'r');
 	    }
 	    
 	    try {
@@ -5771,35 +5935,27 @@ Class Utilities{
 	        $user->getByID($userid);
 	        $branch = new branches($this->db);
 	        $branch->getByID($user->branch);
-	        	        
-	        $productId = $product['uraproductidentifier'];
-	        $productCode = $product['code'];
 	        
-	        $transferdetails[] = array(
-	            'commodityGoodsId' => $productId,
-	            'goodsCode' => $productCode,
-	            'measureUnit' => $product['measureunit'],
-	            'quantity' => strval($qty),
-	            'remarks' => $remarks
-	        );
 	        
-	        $product = array(
+	        $product_stock = array(
 	            'goodsStockTransfer' => array(
-	                'sourceBranchId' => $sourcebranch,
-	                'destinationBranchId' => $destinationbranch,
+	                'sourceBranchId' => $this->mapbranchcode($sourcebranch),
+	                'destinationBranchId' => $this->mapbranchcode($destinationbranch),
 	                'transferTypeCode' => '101',
 	                'remarks' => '',
+	                'rollBackIfError' => '',
+	                'goodsTypeCode' => '',
 	            ),
-	            'goodsStockTransferItem' => $transferdetails
+	            'goodsStockTransferItem' => $s_goods
 	        );
 	        
-	        $product = json_encode($product); //JSON-ifiy
-	        $product = base64_encode($product); //base64 encode
-	        $this->logger->write("Utilities : transferproductstock() : The encoded product is " . $product, 'r');
+	        $product_stock_j = json_encode($product_stock); //JSON-ifiy
+	        $product_stock_b = base64_encode($product_stock_j); //base64 encode
+	        $this->logger->write("Utilities : transferproductstock() : The encoded product stock is " . $product_stock_b, 'r');
 	        
 	        $data = array(
 	            'data' => array(
-	                'content' => $product,
+	                'content' => $product_stock_b,
 	                'signature' => '',
 	                'dataDescription' => array(
 	                    'codeType' => '0',
@@ -5947,11 +6103,12 @@ Class Utilities{
 	        $t_taxes = array();
 	        $t_payments = array();
 	        $t_summary = array();
+	        $t_airlinegoods = array();
 	        
 	        $netamount = 0;
 	        $taxamount = 0;
 	        $grossamount = 0;
-	        $itemcount = 0;
+	        $itemcount = 0;	
 	        
 	        try{
 	            //$temp = $goods;
@@ -6024,7 +6181,22 @@ Class Utilities{
 	                    'stick' => empty($obj['stick'])? '' : $obj['stick'],
 	                    'exciseUnit' => empty($obj['exciseunit'])? '' : $obj['exciseunit'],
 	                    'exciseCurrency' => empty($obj['excisecurrency'])? '' : $obj['excisecurrency'],
-	                    'exciseRateName' => empty($obj['exciseratename'])? '' : $obj['exciseratename']
+	                    'exciseRateName' => empty($obj['exciseratename'])? '' : $obj['exciseratename'],
+	                    /**
+	                     * Modification Date: 2025-05-30
+	                     * Modified By: Francis Lubanga
+	                     * Description: Resolving error code 2857 - goodsDetails-->taxRate:If 'vatApplicableFlag' is '0', 'taxRate' must be '0'!Collection index:1 when sending VAT OUT OF SCOPE items
+	                     * */
+	                    'vatApplicableFlag' => (empty($obj['goodscategoryid']) || $obj['goodscategoryid'] !== '96010102')? '1' : '0',
+	                    //'vatApplicableFlag' => empty($obj['vatApplicableFlag'])? '' : $obj['vatApplicableFlag'],
+	                    'deemedExemptCode' => empty($obj['deemedExemptCode'])? '' : $obj['deemedExemptCode'],
+	                    'vatProjectId' => empty($obj['vatProjectId'])? '' : $obj['vatProjectId'],
+	                    'vatProjectName' => empty($obj['vatProjectName'])? '' : $obj['vatProjectName'],
+	                    'hsCode' => empty($obj['hsCode'])? '' : $obj['hsCode'],
+	                    'hsName' => empty($obj['hsName'])? '' : $obj['hsName'],
+	                    'totalWeight' => empty($obj['totalWeight'])? '' : round($obj['totalWeight'], 4),
+	                    'pieceQty' => empty($obj['pieceQty'])? '' : $obj['pieceQty'],
+	                    'pieceMeasureUnit' => empty($obj['pieceMeasureUnit'])? '' : $obj['pieceMeasureUnit']
 	                );
 	                
 	                $i = $i + 1;
@@ -6065,7 +6237,16 @@ Class Utilities{
 	                        'stick' => empty($obj['stick'])? '' : $obj['stick'],
 	                        'exciseUnit' => empty($obj['exciseunit'])? '' : $obj['exciseunit'],
 	                        'exciseCurrency' => empty($obj['excisecurrency'])? '' : $obj['excisecurrency'],
-	                        'exciseRateName' => empty($obj['exciseratename'])? '' : $obj['exciseratename']
+	                        'exciseRateName' => empty($obj['exciseratename'])? '' : $obj['exciseratename'],
+	                        'vatApplicableFlag' => empty($obj['vatApplicableFlag'])? '' : $obj['vatApplicableFlag'],
+	                        'deemedExemptCode' => empty($obj['deemedExemptCode'])? '' : $obj['deemedExemptCode'],
+	                        'vatProjectId' => empty($obj['vatProjectId'])? '' : $obj['vatProjectId'],
+	                        'vatProjectName' => empty($obj['vatProjectName'])? '' : $obj['vatProjectName'],
+	                        'hsCode' => empty($obj['hsCode'])? '' : $obj['hsCode'],
+	                        'hsName' => empty($obj['hsName'])? '' : $obj['hsName'],
+	                        'totalWeight' => empty($obj['totalWeight'])? '' : round($obj['totalWeight'], 4),
+	                        'pieceQty' => empty($obj['pieceQty'])? '' : $obj['pieceQty'],
+	                        'pieceMeasureUnit' => empty($obj['pieceMeasureUnit'])? '' : $obj['pieceMeasureUnit']
 	                    );
 	                    
 	                    $i = $i + 1;
@@ -6164,7 +6345,7 @@ Class Utilities{
 	            'netamount' => strtoupper(trim($deemedflag)) == 'N'? round($netamount, 2) : number_format((floor($netamount*100)/100), 2, '.', ''),
 	            'taxamount' => strtoupper(trim($deemedflag)) == 'N'? round($taxamount, 2) : 0,
 	            'grossamount' => strtoupper(trim($deemedflag)) == 'N'? round($grossamount, 2) : number_format((floor($netamount*100)/100), 2, '.', ''),
-	            'itemcount' => $itemcount
+	            'itemcount' => sizeof($goods)
 	        );
 	        
 	        try{
@@ -6184,93 +6365,189 @@ Class Utilities{
 	        
 	        //return json_encode(array('returnCode' => '999', 'returnMessage' => 'Unknown Error'));
 	        
-	        $invoice_u = array(
-	            'sellerDetails' => array(
-	                'tin' => empty($org->tin)? '' : $org->tin,
-	                'ninBrn' => empty($org->ninbrn)? '' : addslashes($org->ninbrn),
-	                'legalName' => empty($org->legalname)? '' : addslashes($org->legalname),
-	                'businessName' => empty($org->businessname)? '' : addslashes($org->businessname),
-	                'address' => empty($org->address)? '' : addslashes($org->address),
-	                'mobilePhone' => empty($org->mobilephone)? '' : $org->mobilephone,
-	                'linePhone' => empty($org->linephone)? '' : $org->linephone,
-	                'emailAddress' => empty($org->emailaddress)? '' : addslashes($org->emailaddress),
-	                'placeOfBusiness' => empty($org->placeofbusiness)? '' : addslashes($org->placeofbusiness),
-	                'referenceNo' => empty($invoicedetails['erpinvoiceid'])? '' : $invoicedetails['erpinvoiceid'],
-	                'branchId' => empty($branchuraid)? $devicedetails->branchId : $branchuraid,
-	                'isCheckReferenceNo' => '0'
-	            ),
-	            'basicInformation' => array(
-	                'invoiceNo' => empty($invoicedetails['erpinvoiceid'])? '' : $invoicedetails['erpinvoiceid'],
-	                'antifakeCode' => empty($invoicedetails['antifakecode'])? '' : $invoicedetails['antifakecode'],
-	                'deviceNo' => $invoicedetails['deviceno'],
-	                'issuedDate' => date('Y-m-d H:i:s'),
-	                'operator' => $invoicedetails['operator'],
-	                'currency' => $invoicedetails['currency'],
-	                'oriInvoiceId' => empty($invoicedetails['oriinvoiceid'])? '' : $invoicedetails['oriinvoiceid'],
-	                'invoiceType' => empty($invoicedetails['invoicetype'])? '' : strval($invoicedetails['invoicetype']),
-	                'invoiceKind' => empty($invoicedetails['invoicekind'])? '' : strval($invoicedetails['invoicekind']),
-	                'dataSource' => empty($invoicedetails['datasource'])? '' : strval($invoicedetails['datasource']),
-	                'invoiceIndustryCode' => empty($invoicedetails['invoiceindustrycode'])? '' : strval($invoicedetails['invoiceindustrycode']),
-	                'isBatch' => empty($invoicedetails['isbatch'])? '' : $invoicedetails['isbatch']
-	            ),
-	            'buyerDetails' => array(
-	                'buyerTin' => empty($buyer['tin'])? '' : $buyer['tin'],
-	                'buyerNinBrn' => empty($buyer['ninbrn'])? '' : $buyer['ninbrn'],
-	                'buyerPassportNum' => empty($buyer['PassportNum'])? '' : $buyer['PassportNum'],
-	                'buyerLegalName' => empty($buyer['legalname'])? '' : $buyer['legalname'],
-	                'buyerBusinessName' => empty($buyer['businessname'])? '' : $buyer['businessname'],
-	                'buyerAddress' => empty($buyer['address'])? '' : $buyer['address'],
-	                'buyerEmail' => empty($buyer['emailaddress'])? '' : $buyer['emailaddress'],
-	                'buyerMobilePhone' => empty($buyer['mobilephone'])? '' : $buyer['mobilephone'],
-	                'buyerLinePhone' => empty($buyer['linephone'])? '' : $buyer['linephone'],
-	                'buyerPlaceOfBusi' => empty($buyer['placeofbusiness'])? '' : $buyer['placeofbusiness'],
-	                'buyerType' => strval($buyer['type']),
-	                'buyerCitizenship' => empty($buyer['citizineship'])? '' : $buyer['citizineship'],
-	                'buyerSector' => empty($buyer['sector'])? '' : $buyer['sector'],
-	                'buyerReferenceNo' => ''
-	            ),
-	            'goodsDetails' => $t_goods,
-	            'taxDetails' => $t_taxes,
-	            'summary' => array(
-	                'netAmount' => empty($t_summary[0]['netamount'])? '0' : strval($t_summary[0]['netamount']),
-	                'taxAmount' => empty($t_summary[0]['taxamount'])? '0' : strval($t_summary[0]['taxamount']),
-	                'grossAmount' => empty($t_summary[0]['grossamount'])? '0' : strval($t_summary[0]['grossamount']),
-	                'itemCount' => empty($t_summary[0]['itemcount'])? '0' : strval($t_summary[0]['itemcount']),
-	                'modeCode' => empty($invoicedetails['modecode'])? '' : $invoicedetails['modecode'],
-	                'remarks' => empty($invoicedetails['remarks'])? '' : $invoicedetails['remarks'],
-	                'qrCode' => ''
-	            ),
-	            'payWay' => $t_payments,
-	            'extend' => array(
-    	            /**
-    	             * Author: fl@dalytics.co
-    	             * Date: 2023-05-16
-    	             * Description: Resolve EFRIS error code 1404 - reasonCode:Invalid field value!
-    	             */
-	                'reason' => trim($invoicedetails['invoicetype']) == '5'? 'Credit Memo' : '',
-	                'reasonCode' => trim($invoicedetails['invoicetype']) == '5'? '103' : ''
-	            ),
-				'importServicesSeller' => $invoicedetails['invoiceindustrycode'] == 'Imported Service' ? 
-						array(
-									'importBusinessName' => empty($buyer['legalname'])? '' : $buyer['legalname'],
-							'importEmailAddress' => empty($buyer['emailaddress'])? '' : $buyer['emailaddress'],
-							'importContactNumber' => empty($buyer['mobilephone'])? '' : $buyer['mobilephone'],
-							'importAddress' => empty($buyer['address'])? '' : $buyer['address'],
-							'importInvoiceDate' => '2024-03-03',
-							'importAttachmentName' => '',
-							'importAttachmentContent' => ''
-					
-						) : 
-						array(
-						    'importBusinessName' => '',
-							'importEmailAddress' => '',
-							'importContactNumber' => '',
-							'importAddress' => '',
-							'importInvoiceDate' => '',
-							'importAttachmentName' => '',
-							'importAttachmentContent' => ''
-						)
-	        );
+	        if(trim($invoicedetails['invoiceindustrycode']) == '104'){
+	            $this->logger->write("Utilities : uploadinvoice() : This is an Imported Services invoice. Proceed and swap the seller with the buyer.", 'r');
+	            
+	            $invoice_u = array(
+	                'sellerDetails' => array(
+	                    'tin' => empty($org->tin)? '' : $org->tin,
+	                    'ninBrn' => empty($org->ninbrn)? '' : addslashes($org->ninbrn),
+	                    'legalName' => empty($org->legalname)? '' : addslashes($org->legalname),
+	                    'businessName' => empty($org->businessname)? '' : addslashes($org->businessname),
+	                    'address' => empty($org->address)? '' : addslashes($org->address),
+	                    'mobilePhone' => empty($org->mobilephone)? '' : $org->mobilephone,
+	                    'linePhone' => empty($org->linephone)? '' : $org->linephone,
+	                    'emailAddress' => empty($org->emailaddress)? '' : addslashes($org->emailaddress),
+	                    'placeOfBusiness' => empty($org->placeofbusiness)? '' : addslashes($org->placeofbusiness),
+	                    'referenceNo' => empty($invoicedetails['erpinvoiceid'])? '' : $invoicedetails['erpinvoiceid'],
+	                    'branchId' => empty($branchuraid)? $devicedetails->branchId : $branchuraid,
+	                    'isCheckReferenceNo' => '0'
+	                ),
+	                'basicInformation' => array(
+	                    'invoiceNo' => empty($invoicedetails['erpinvoiceid'])? '' : $invoicedetails['erpinvoiceid'],
+	                    'antifakeCode' => empty($invoicedetails['antifakecode'])? '' : $invoicedetails['antifakecode'],
+	                    'deviceNo' => $invoicedetails['deviceno'],
+	                    'issuedDate' => date('Y-m-d H:i:s'),
+	                    'operator' => $invoicedetails['operator'],
+	                    'currency' => $invoicedetails['currency'],
+	                    'oriInvoiceId' => empty($invoicedetails['oriinvoiceid'])? '' : $invoicedetails['oriinvoiceid'],
+	                    'invoiceType' => empty($invoicedetails['invoicetype'])? '' : strval($invoicedetails['invoicetype']),
+	                    'invoiceKind' => empty($invoicedetails['invoicekind'])? '' : strval($invoicedetails['invoicekind']),
+	                    'dataSource' => empty($invoicedetails['datasource'])? '' : strval($invoicedetails['datasource']),
+	                    'invoiceIndustryCode' => empty($invoicedetails['invoiceindustrycode'])? '' : strval($invoicedetails['invoiceindustrycode']),
+	                    'isBatch' => empty($invoicedetails['isbatch'])? '' : $invoicedetails['isbatch']
+	                ),
+	                'buyerDetails' => array(
+	                    'buyerTin' => empty($org->tin)? '' : $org->tin,
+	                    'buyerNinBrn' => empty($org->ninbrn)? '' : addslashes($org->ninbrn),
+	                    'buyerPassportNum' => '',
+	                    'buyerLegalName' => empty($org->legalname)? '' : addslashes($org->legalname),
+	                    'buyerBusinessName' => empty($org->businessname)? '' : addslashes($org->businessname),
+	                    'buyerAddress' => empty($org->address)? '' : addslashes($org->address),
+	                    'buyerEmail' => empty($org->emailaddress)? '' : addslashes($org->emailaddress),
+	                    'buyerMobilePhone' => empty($org->mobilephone)? '' : $org->mobilephone,
+	                    'buyerLinePhone' => empty($org->linephone)? '' : $org->linephone,
+	                    'buyerPlaceOfBusi' => empty($org->placeofbusiness)? '' : addslashes($org->placeofbusiness),
+	                    'buyerType' => strval($this->appsettings['B2BCODE']),
+	                    'buyerCitizenship' => '',
+	                    'buyerSector' => '',
+	                    'buyerReferenceNo' => '',
+	                    'nonResidentFlag' => '0',
+	                    'deliveryTermsCode' => ''
+	                ),
+	                'goodsDetails' => $t_goods,
+	                'taxDetails' => $t_taxes,
+	                'summary' => array(
+	                    'netAmount' => empty($t_summary[0]['netamount'])? '0' : strval($t_summary[0]['netamount']),
+	                    'taxAmount' => empty($t_summary[0]['taxamount'])? '0' : strval($t_summary[0]['taxamount']),
+	                    'grossAmount' => empty($t_summary[0]['grossamount'])? '0' : strval($t_summary[0]['grossamount']),
+	                    'itemCount' => empty($t_summary[0]['itemcount'])? '0' : strval($t_summary[0]['itemcount']),
+	                    'modeCode' => empty($invoicedetails['modecode'])? '' : $invoicedetails['modecode'],
+	                    'remarks' => empty($invoicedetails['remarks'])? '' : $invoicedetails['remarks'],
+	                    'qrCode' => ''
+	                ),
+	                'payWay' => $t_payments,
+	                'extend' => array(
+	                    /**
+	                     * Author: francis.lubanga@gmail.com
+	                     * Date: 2023-05-16
+	                     * Description: Resolve EFRIS error code 1404 - reasonCode:Invalid field value!
+	                     */
+	                    'reason' => trim($invoicedetails['invoicetype']) == '5'? 'Credit Memo' : '',
+	                    'reasonCode' => trim($invoicedetails['invoicetype']) == '5'? '103' : ''
+	                ),
+	                'importServicesSeller' => array(
+	                    'importBusinessName' => empty($buyer['businessname'])? $buyer['legalname'] : $buyer['businessname'],
+	                    'importEmailAddress' => empty($buyer['emailaddress'])? '' : $buyer['emailaddress'],
+	                    'importContactNumber' => empty($buyer['mobilephone'])? $buyer['linephone'] : $buyer['mobilephone'],
+	                    'importAddress' => empty($buyer['address'])? $buyer['placeofbusiness'] : $buyer['address'],
+	                    'importInvoiceDate' => date('Y-m-d'),
+	                    'importAttachmentName' => '',
+	                    'importAttachmentContent' => ''
+	                ),
+	                'airlineGoodsDetails' => $t_airlinegoods,
+	                'buyerExtend' => array(
+	                    'propertyType' => '',
+	                    'district' => '',
+	                    'municipalityCounty' => '',
+	                    'divisionSubcounty' => '',
+	                    'town' => '',
+	                    'cellVillage' => '',
+	                    'effectiveRegistrationDate' => '',
+	                    'meterStatus' => ''
+	                ),
+	            );
+	        } else {
+    	        $invoice_u = array(
+    	            'sellerDetails' => array(
+    	                'tin' => empty($org->tin)? '' : $org->tin,
+    	                'ninBrn' => empty($org->ninbrn)? '' : addslashes($org->ninbrn),
+    	                'legalName' => empty($org->legalname)? '' : addslashes($org->legalname),
+    	                'businessName' => empty($org->businessname)? '' : addslashes($org->businessname),
+    	                'address' => empty($org->address)? '' : addslashes($org->address),
+    	                'mobilePhone' => empty($org->mobilephone)? '' : $org->mobilephone,
+    	                'linePhone' => empty($org->linephone)? '' : $org->linephone,
+    	                'emailAddress' => empty($org->emailaddress)? '' : addslashes($org->emailaddress),
+    	                'placeOfBusiness' => empty($org->placeofbusiness)? '' : addslashes($org->placeofbusiness),
+    	                'referenceNo' => empty($invoicedetails['erpinvoiceid'])? '' : $invoicedetails['erpinvoiceid'],
+    	                'branchId' => empty($branchuraid)? $devicedetails->branchId : $branchuraid,
+    	                'isCheckReferenceNo' => '0'
+    	            ),
+    	            'basicInformation' => array(
+    	                'invoiceNo' => empty($invoicedetails['erpinvoiceid'])? '' : $invoicedetails['erpinvoiceid'],
+    	                'antifakeCode' => empty($invoicedetails['antifakecode'])? '' : $invoicedetails['antifakecode'],
+    	                'deviceNo' => $invoicedetails['deviceno'],
+    	                'issuedDate' => date('Y-m-d H:i:s'),
+    	                'operator' => $invoicedetails['operator'],
+    	                'currency' => $invoicedetails['currency'],
+    	                'oriInvoiceId' => empty($invoicedetails['oriinvoiceid'])? '' : $invoicedetails['oriinvoiceid'],
+    	                'invoiceType' => empty($invoicedetails['invoicetype'])? '' : strval($invoicedetails['invoicetype']),
+    	                'invoiceKind' => empty($invoicedetails['invoicekind'])? '' : strval($invoicedetails['invoicekind']),
+    	                'dataSource' => empty($invoicedetails['datasource'])? '' : strval($invoicedetails['datasource']),
+    	                'invoiceIndustryCode' => empty($invoicedetails['invoiceindustrycode'])? '' : strval($invoicedetails['invoiceindustrycode']),
+    	                'isBatch' => empty($invoicedetails['isbatch'])? '' : $invoicedetails['isbatch']
+    	            ),
+    	            'buyerDetails' => array(
+    	                'buyerTin' => empty($buyer['tin'])? '' : $buyer['tin'],
+    	                'buyerNinBrn' => empty($buyer['ninbrn'])? '' : $buyer['ninbrn'],
+    	                'buyerPassportNum' => empty($buyer['PassportNum'])? '' : $buyer['PassportNum'],
+    	                'buyerLegalName' => empty($buyer['legalname'])? '' : $buyer['legalname'],
+    	                'buyerBusinessName' => empty($buyer['businessname'])? '' : $buyer['businessname'],
+    	                'buyerAddress' => empty($buyer['address'])? '' : $buyer['address'],
+    	                'buyerEmail' => empty($buyer['emailaddress'])? '' : $buyer['emailaddress'],
+    	                'buyerMobilePhone' => empty($buyer['mobilephone'])? '' : $buyer['mobilephone'],
+    	                'buyerLinePhone' => empty($buyer['linephone'])? '' : $buyer['linephone'],
+    	                'buyerPlaceOfBusi' => empty($buyer['placeofbusiness'])? '' : $buyer['placeofbusiness'],
+    	                'buyerType' => strval($buyer['type']),
+    	                'buyerCitizenship' => empty($buyer['citizineship'])? '' : $buyer['citizineship'],
+    	                'buyerSector' => empty($buyer['sector'])? '' : $buyer['sector'],
+    	                'buyerReferenceNo' => '',
+    	                'nonResidentFlag' => empty($buyer['nonResidentFlag'])? '0' : $buyer['nonResidentFlag'],
+    	                'deliveryTermsCode' => $buyer['deliveryTermsCode']
+    	            ),
+    	            'goodsDetails' => $t_goods,
+    	            'taxDetails' => $t_taxes,
+    	            'summary' => array(
+    	                'netAmount' => empty($t_summary[0]['netamount'])? '0' : strval($t_summary[0]['netamount']),
+    	                'taxAmount' => empty($t_summary[0]['taxamount'])? '0' : strval($t_summary[0]['taxamount']),
+    	                'grossAmount' => empty($t_summary[0]['grossamount'])? '0' : strval($t_summary[0]['grossamount']),
+    	                'itemCount' => empty($t_summary[0]['itemcount'])? '0' : strval($t_summary[0]['itemcount']),
+    	                'modeCode' => empty($invoicedetails['modecode'])? '' : $invoicedetails['modecode'],
+    	                'remarks' => empty($invoicedetails['remarks'])? '' : $invoicedetails['remarks'],
+    	                'qrCode' => ''
+    	            ),
+    	            'payWay' => $t_payments,
+    	            'extend' => array(
+        	            /**
+        	             * Author: francis.lubanga@gmail.com
+        	             * Date: 2023-05-16
+        	             * Description: Resolve EFRIS error code 1404 - reasonCode:Invalid field value!
+        	             */
+    	                'reason' => trim($invoicedetails['invoicetype']) == '5'? 'Credit Memo' : '',
+    	                'reasonCode' => trim($invoicedetails['invoicetype']) == '5'? '103' : ''
+    	            ),
+    	            'importServicesSeller' => array(
+    	                'importBusinessName' => '',
+    	                'importEmailAddress' => '',
+    	                'importContactNumber' => '',
+    	                'importAddress' => '',
+    	                'importInvoiceDate' => '',
+    	                'importAttachmentName' => '',
+    	                'importAttachmentContent' => ''
+    	            ),
+    	            'airlineGoodsDetails' => $t_airlinegoods,
+    	            'buyerExtend' => array(
+    	                'propertyType' => '',
+    	                'district' => '',
+    	                'municipalityCounty' => '',
+    	                'divisionSubcounty' => '',
+    	                'town' => '',
+    	                'cellVillage' => '',
+    	                'effectiveRegistrationDate' => '',
+    	                'meterStatus' => ''
+    	            ),
+    	        );
+	        }
 	        
 	        //print_r($invoice_u);
 	        
@@ -6482,7 +6759,9 @@ Class Utilities{
 	                    'stick' => empty($obj['stick'])? '' : $obj['stick'],
 	                    'exciseUnit' => empty($obj['exciseunit'])? '' : $obj['exciseunit'],
 	                    'exciseCurrency' => empty($obj['excisecurrency'])? '' : $obj['excisecurrency'],
-	                    'exciseRateName' => empty($obj['exciseratename'])? '' : $obj['exciseratename']
+	                    'exciseRateName' => empty($obj['exciseratename'])? '' : $obj['exciseratename'],
+	                    'vatProjectId' => empty($obj['vatProjectId'])? '' : $obj['vatProjectId'],
+	                    'vatProjectName' => empty($obj['vatProjectName'])? '' : $obj['vatProjectName']
 	                );
 	                
 	                $i = $i + 1;
@@ -6523,7 +6802,9 @@ Class Utilities{
 	                        'stick' => empty($obj['stick'])? '' : $obj['stick'],
 	                        'exciseUnit' => empty($obj['exciseunit'])? '' : $obj['exciseunit'],
 	                        'exciseCurrency' => empty($obj['excisecurrency'])? '' : $obj['excisecurrency'],
-	                        'exciseRateName' => empty($obj['exciseratename'])? '' : $obj['exciseratename']
+	                        'exciseRateName' => empty($obj['exciseratename'])? '' : $obj['exciseratename'],
+	                        'vatProjectId' => empty($obj['vatProjectId'])? '' : $obj['vatProjectId'],
+	                        'vatProjectName' => empty($obj['vatProjectName'])? '' : $obj['vatProjectName']
 	                    );
 	                    
 	                    $i = $i + 1;
@@ -6918,7 +7199,9 @@ Class Utilities{
 	                    'stick' => empty($obj['stick'])? '' : $obj['stick'],
 	                    'exciseUnit' => empty($obj['exciseunit'])? '' : $obj['exciseunit'],
 	                    'exciseCurrency' => empty($obj['excisecurrency'])? '' : $obj['excisecurrency'],
-	                    'exciseRateName' => empty($obj['exciseratename'])? '' : $obj['exciseratename']
+	                    'exciseRateName' => empty($obj['exciseratename'])? '' : $obj['exciseratename'],
+	                    'vatProjectId' => empty($obj['vatProjectId'])? '' : $obj['vatProjectId'],
+	                    'vatProjectName' => empty($obj['vatProjectName'])? '' : $obj['vatProjectName']
 	                );
 	                
 	                $i = $i + 1;
@@ -7011,7 +7294,7 @@ Class Utilities{
 	            'netamount' => strtoupper(trim($deemedflag)) == 'N'? round($netamount, 2) : number_format((floor($netamount*100)/100), 2, '.', ''),
 	            'taxamount' => strtoupper(trim($deemedflag)) == 'N'? round($taxamount, 2) : 0,
 	            'grossamount' => strtoupper(trim($deemedflag)) == 'N'? round($grossamount, 2) : number_format((floor($netamount*100)/100), 2, '.', ''),
-	            'itemcount' => $itemcount
+	            'itemcount' => sizeof($goods)
 	        );
 	        
 	        try{
@@ -8842,7 +9125,7 @@ Class Utilities{
 	            'payWay' => $t_payments,
 	            'extend' => array(
 	                /**
-	                 * Author: fl@dalytics.co
+	                 * Author: francis.lubanga@gmail.com
 	                 * Date: 2023-05-16
 	                 * Description: Resolve EFRIS error code 1404 - reasonCode:Invalid field value!
 	                 */
