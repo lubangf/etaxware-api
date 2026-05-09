@@ -6,6 +6,11 @@ Last updated: 2026-05-07
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 2.1.24 | 2026-05-07 | Replaced remaining empty placeholder values in Section 10 sample payloads/responses (including `/validatetin`, `/queryinvoice`, `/uploadproduct`, and `/uploadinvoice`) with inferred dummy data. |
+| 2.1.23 | 2026-05-07 | Replaced empty sample values in Section 10 `/uploadcreditnote` and `/uploaddebitnote` full payload examples with inferred dummy data for clearer implementation guidance. |
+| 2.1.22 | 2026-05-07 | Expanded Section 10 `/uploadcreditnote` and `/uploaddebitnote` sample request/curl payloads with fuller business fields for production-like examples. |
+| 2.1.21 | 2026-05-07 | Added sample success JSON responses for Section 10 `/uploadcreditnote` and `/uploaddebitnote` examples. |
+| 2.1.20 | 2026-05-07 | Added Section 10 JSON examples (request, curl, and sample response) for `/uploadcreditnote` and `/uploaddebitnote`. |
 | 2.1.19 | 2026-05-07 | Enforced mandatory `VOUCHERNUMBER` validation for `/stocktransfer` on both active Tally v18 XML and FTS v14 JSON handlers; requests without voucher number now fail fast with `-999` before duplicate-check/transfer submission. |
 | 2.1.18 | 2026-05-07 | Added explicit SmartLogger log-routing rules section in operations docs to permanently define API and utility trace vs operational log destinations. |
 | 2.1.17 | 2026-05-07 | Refined Tally v18 SmartLogger trace routing by updating the `beforeroute` raw-body log phrase to match trace classification rules, ensuring XML payload body lines are written to `api-trace.log` instead of `api.log`. |
@@ -1116,6 +1121,7 @@ Returned fields:
 | data.INVNO | Credit note number | Conditional | `CN-001` |
 | data.ISSUEDT | Issue date/time | Conditional | `2026-04-25 10:20:00` |
 | data.FDN | Fiscal device number | Conditional | `102180132712` |
+| data.REFERENCE | ERP reference associated with the credit note | Conditional | `ERP-CN-001` |
 | data.QRCODE | Encoded QR content | Conditional | `https://...` |
 
 #### POST /uploaddebitnote
@@ -1503,9 +1509,9 @@ Sample success response:
     "NINBRN": "/80020002851201",
     "LEGALNAME": "FTS GROUP CONSULTING SERVICES LIMITED",
     "BUSINESSNAME": "FTS GROUP CONSULTING SERVICES LIMITED",
-    "CONTACTNUMBER": "",
-    "CONTACTEMAIL": "",
-    "ADDRESS": ""
+    "CONTACTNUMBER": "+256414123456",
+    "CONTACTEMAIL": "taxpayer@example.com",
+    "ADDRESS": "Plot 10 Kampala Road, Kampala"
   }
 }
 ```
@@ -1686,7 +1692,7 @@ Sample request:
   "HASEXCISEDUTYFLAG": "No",
   "EXCISEDUTYCODE": "",
   "HAVEPIECEUNITSFLAG": "No",
-  "PIECEUNITSMEASUREUNIT": "",
+  "PIECEUNITSMEASUREUNIT": "Pcs",
   "PIECEUNITPRICE": "0",
   "PACKAGESCALEVALUE": "0",
   "PIECESCALEVALUE": "0",
@@ -1695,10 +1701,10 @@ Sample request:
   "TAXCODE": "01",
   "HSCODE": "101",
   "CUSTOMMEASUREUNIT": "",
-  "CUSTOMUNITPRICE": "",
-  "CUSTOMPACKAGESCALEDVALUE": "",
-  "CUSTOMSCALEDVALUE": "",
-  "CUSTOMWEIGHT": ""
+  "CUSTOMUNITPRICE": "0",
+  "CUSTOMPACKAGESCALEDVALUE": "0",
+  "CUSTOMSCALEDVALUE": "0",
+  "CUSTOMWEIGHT": "0"
 }
 ```
 
@@ -1725,7 +1731,7 @@ curl -X POST "http://localhost/etaxware-api/api/{adapter}/uploadproduct" \
     "HASEXCISEDUTYFLAG":"No",
     "EXCISEDUTYCODE":"",
     "HAVEPIECEUNITSFLAG":"No",
-    "PIECEUNITSMEASUREUNIT":"",
+    "PIECEUNITSMEASUREUNIT":"Pcs",
     "PIECEUNITPRICE":"0",
     "PACKAGESCALEVALUE":"0",
     "PIECESCALEVALUE":"0",
@@ -1734,10 +1740,10 @@ curl -X POST "http://localhost/etaxware-api/api/{adapter}/uploadproduct" \
     "TAXCODE":"01",
     "HSCODE":"101",
     "CUSTOMMEASUREUNIT":"",
-    "CUSTOMUNITPRICE":"",
-    "CUSTOMPACKAGESCALEDVALUE":"",
-    "CUSTOMSCALEDVALUE":"",
-    "CUSTOMWEIGHT":""
+    "CUSTOMUNITPRICE":"0",
+    "CUSTOMPACKAGESCALEDVALUE":"0",
+    "CUSTOMSCALEDVALUE":"0",
+    "CUSTOMWEIGHT":"0"
   }'
 ```
 
@@ -1777,20 +1783,20 @@ Sample request:
   "MACADDRESS": "00-00-00-00-00-00",
   "SYSTEMNAME": "local",
   "BUYERADDRESS": "Kampala",
-  "BUYEREMAIL": "",
+  "BUYEREMAIL": "buyer@example.com",
   "BUYERCITIZENSHIP": "UG",
   "BUYERLEGALNAME": "Sample Buyer",
-  "MOBILEPHONE": "",
+  "MOBILEPHONE": "+256700123456",
   "CURRENCY": "UGX",
   "INDUSTRYCODE": "101",
-  "BUYERSECTOR": "",
-  "BUYERNINBRN": "",
-  "BUYERTIN": "",
+  "BUYERSECTOR": "Retail",
+  "BUYERNINBRN": "CF12345678",
+  "BUYERTIN": "1012345678",
   "VOUCHERNUMBER": "INV-SAMPLE-001",
-  "PROJECTID": "",
-  "BRANCH": "",
+  "PROJECTID": "PRJ-001",
+  "BRANCH": "Kampala HQ",
   "VOUCHERTYPE": "Invoice",
-  "BUYERREFERENCENO": "",
+  "BUYERREFERENCENO": "PO-7787",
   "BUSINESSNAME": "Sample Buyer",
   "VOUCHERTYPENAME": "Invoice",
   "INVENTORIES": [
@@ -1807,15 +1813,15 @@ Sample request:
       "AMOUNT": "1000"
     }
   ],
-  "PROJECTNAME": "",
+  "PROJECTNAME": "Tax Integration Pilot",
   "PRICEVATINCLUSIVE": "NO",
-  "BUYERPASSPORTNUM": "",
+  "BUYERPASSPORTNUM": "B1234567",
   "VOUCHERREF": "INVREF-SAMPLE-001",
   "BUYERPLACEOFBUSI": "Kampala Uganda",
   "BUYERTYPE": "101",
   "NONRESIDENTFLAG": "2",
-  "BUYERLINEPHONE": "",
-  "DELIVERYTERMCODE": "",
+  "BUYERLINEPHONE": "+256414123456",
+  "DELIVERYTERMCODE": "FOB",
   "REMARKS": "sample"
 }
 ```
@@ -1835,32 +1841,32 @@ curl -X POST "http://localhost/etaxware-api/api/{adapter}/uploadinvoice" \
     "MACADDRESS":"00-00-00-00-00-00",
     "SYSTEMNAME":"local",
     "BUYERADDRESS":"Kampala",
-    "BUYEREMAIL":"",
+    "BUYEREMAIL":"buyer@example.com",
     "BUYERCITIZENSHIP":"UG",
     "BUYERLEGALNAME":"Sample Buyer",
-    "MOBILEPHONE":"",
+    "MOBILEPHONE":"+256700123456",
     "CURRENCY":"UGX",
     "INDUSTRYCODE":"101",
-    "BUYERSECTOR":"",
-    "BUYERNINBRN":"",
-    "BUYERTIN":"",
+    "BUYERSECTOR":"Retail",
+    "BUYERNINBRN":"CF12345678",
+    "BUYERTIN":"1012345678",
     "VOUCHERNUMBER":"INV-SAMPLE-001",
-    "PROJECTID":"",
-    "BRANCH":"",
+    "PROJECTID":"PRJ-001",
+    "BRANCH":"Kampala HQ",
     "VOUCHERTYPE":"Invoice",
-    "BUYERREFERENCENO":"",
+    "BUYERREFERENCENO":"PO-7787",
     "BUSINESSNAME":"Sample Buyer",
     "VOUCHERTYPENAME":"Invoice",
     "INVENTORIES":[{"RATE":"1000","DISCOUNTPCT":"0","PRODUCTCODE":"EXC_TEST_3","TAXRATE":"0.18","DISCOUNT":"0","TAXCODE":"01","TOTALWEIGHT":"0","QTY":"1","DISCOUNTFLAG":"2","AMOUNT":"1000"}],
-    "PROJECTNAME":"",
+    "PROJECTNAME":"Tax Integration Pilot",
     "PRICEVATINCLUSIVE":"NO",
-    "BUYERPASSPORTNUM":"",
+    "BUYERPASSPORTNUM":"B1234567",
     "VOUCHERREF":"INVREF-SAMPLE-001",
     "BUYERPLACEOFBUSI":"Kampala Uganda",
     "BUYERTYPE":"101",
     "NONRESIDENTFLAG":"2",
-    "BUYERLINEPHONE":"",
-    "DELIVERYTERMCODE":"",
+    "BUYERLINEPHONE":"+256414123456",
+    "DELIVERYTERMCODE":"FOB",
     "REMARKS":"sample"
   }'
 ```
@@ -1878,6 +1884,7 @@ Sample business validation response:
     "INVNO": "",
     "ISSUEDT": "",
     "FDN": "",
+    "REFERENCE": "",
     "QRCODE": ""
   }
 }
@@ -1934,6 +1941,307 @@ Sample SMTP failure response:
     "responseMessage": "The operation to send an email was not successful"
   },
   "data": []
+}
+```
+
+### 10.9 POST /uploadcreditnote
+
+Sample request:
+
+```json
+{
+  "VOUCHERNUMBER": "BATCN008",
+  "CUSTOMERACCOUNT": "CUST-0001",
+  "BUYERTIN": "1012345678",
+  "CURRENCY": "USD",
+  "VOUCHERTYPE": "Credit Note",
+  "VOUCHERTYPENAME": "Credit Note",
+  "VOUCHERREF": "ERP-CN-REF-008",
+  "ORIVOUCHERNUMBER": "C783",
+  "BUYERSECTOR": "Retail",
+  "BUYERTYPE": "B2C",
+  "INDUSTRYCODE": "101",
+  "BUYERNINBRN": "CF12345678",
+  "BUYERADDRESS": "Plot 10 Kampala Road, Kampala",
+  "BUYERCITIZENSHIP": "UG",
+  "BUYEREMAIL": "customer@example.com",
+  "MOBILEPHONE": "+256700123456",
+  "BUYERLINEPHONE": "+256414123456",
+  "BUYERPLACEOFBUSI": "Kampala",
+  "BUYERREFERENCENO": "PO-7788",
+  "BUYERPASSPORTNUM": "B1234567",
+  "BUYERLEGALNAME": "Customer",
+  "BUSINESSNAME": "Customer Business Ltd",
+  "PRICEVATINCLUSIVE": "NO",
+  "PROJECTID": "PRJ-001",
+  "PROJECTNAME": "Tax Integration Pilot",
+  "DELIVERYTERMSCODE": "FOB",
+  "NONRESIDENTFLAG": "2",
+  "DEEMEDFLAG": "2",
+  "VERSION": "5.0.0",
+  "ERPUSER": "manager",
+  "APIKEY": "2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
+  "ORGTIN": "1017918269",
+  "WINDOWSUSER": "svc_etax",
+  "IPADDRESS": "192.168.1.20",
+  "MACADDRESS": "00-1A-2B-3C-4D-5E",
+  "SYSTEMNAME": "ERP-SERVER-01",
+  "REASONS": [
+    {
+      "REASONCODE": "101",
+      "REASON": "Buyer Returned"
+    }
+  ],
+  "BRANCH": "Kampala HQ",
+  "INVENTORIES": [
+    {
+      "PRODUCTCODE": "ALTQTYSAMPLE002",
+      "QTY": "2",
+      "MEASUREUNITS": "Pcs",
+      "AMOUNT": "726392.25",
+      "DISCOUNT": "0",
+      "DISCOUNTPCT": "0",
+      "RATE": "726392.25",
+      "TAX": "130750.61",
+      "TAXRATE": "0.18",
+      "TAXCODE": "A2"
+    }
+  ]
+}
+```
+
+Sample curl:
+
+```bash
+curl -X POST "http://localhost/etaxware-api/api/{adapter}/uploadcreditnote" \
+  -H "Content-Type: application/json" \
+  --data-raw '{
+    "VOUCHERNUMBER":"BATCN008",
+    "CUSTOMERACCOUNT":"CUST-0001",
+    "BUYERTIN":"1012345678",
+    "CURRENCY":"USD",
+    "VOUCHERTYPE":"Credit Note",
+    "VOUCHERTYPENAME":"Credit Note",
+    "VOUCHERREF":"ERP-CN-REF-008",
+    "ORIVOUCHERNUMBER":"C783",
+    "BUYERSECTOR":"Retail",
+    "BUYERTYPE":"B2C",
+    "INDUSTRYCODE":"101",
+    "BUYERNINBRN":"CF12345678",
+    "BUYERADDRESS":"Plot 10 Kampala Road, Kampala",
+    "BUYERCITIZENSHIP":"UG",
+    "BUYEREMAIL":"customer@example.com",
+    "MOBILEPHONE":"+256700123456",
+    "BUYERLINEPHONE":"+256414123456",
+    "BUYERPLACEOFBUSI":"Kampala",
+    "BUYERREFERENCENO":"PO-7788",
+    "BUYERPASSPORTNUM":"B1234567",
+    "BUYERLEGALNAME":"Customer",
+    "BUSINESSNAME":"Customer Business Ltd",
+    "PRICEVATINCLUSIVE":"NO",
+    "PROJECTID":"PRJ-001",
+    "PROJECTNAME":"Tax Integration Pilot",
+    "DELIVERYTERMSCODE":"FOB",
+    "NONRESIDENTFLAG":"2",
+    "DEEMEDFLAG":"2",
+    "VERSION":"5.0.0",
+    "ERPUSER":"manager",
+    "APIKEY":"2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
+    "ORGTIN":"1017918269",
+    "WINDOWSUSER":"svc_etax",
+    "IPADDRESS":"192.168.1.20",
+    "MACADDRESS":"00-1A-2B-3C-4D-5E",
+    "SYSTEMNAME":"ERP-SERVER-01",
+    "REASONS":[{"REASONCODE":"101","REASON":"Buyer Returned"}],
+    "BRANCH":"Kampala HQ",
+    "INVENTORIES":[{"PRODUCTCODE":"ALTQTYSAMPLE002","QTY":"2","MEASUREUNITS":"Pcs","AMOUNT":"726392.25","DISCOUNT":"0","DISCOUNTPCT":"0","RATE":"726392.25","TAX":"130750.61","TAXRATE":"0.18","TAXCODE":"A2"}]
+  }'
+```
+
+Sample business validation response:
+
+```json
+{
+  "response": {
+    "responseCode": "-999",
+    "responseMessage": "No original invoice number was supplied"
+  },
+  "data": {
+    "INVID": "",
+    "INVNO": "",
+    "ISSUEDT": "",
+    "FDN": "",
+    "QRCODE": ""
+  }
+}
+```
+
+Sample success response:
+
+```json
+{
+  "response": {
+    "responseCode": "00",
+    "responseMessage": "The operation was successful"
+  },
+  "data": {
+    "INVID": "3010242152271517353",
+    "INVNO": "CN-SAMPLE-001",
+    "ISSUEDT": "2026-05-07 11:20:00",
+    "FDN": "102180132712",
+    "REFERENCE": "ERP-CN-001",
+    "QRCODE": "https://efris.ura.go.ug/qr/credit-note-sample"
+  }
+}
+```
+
+### 10.10 POST /uploaddebitnote
+
+Sample request:
+
+```json
+{
+  "VOUCHERNUMBER": "BATINV008",
+  "CUSTOMERACCOUNT": "CUST-0002",
+  "BUYERTIN": "1012345678",
+  "CURRENCY": "USD",
+  "VOUCHERTYPE": "Debit Note",
+  "VOUCHERTYPENAME": "Debit Note",
+  "VOUCHERREF": "ERP-DN-REF-008",
+  "ORIVOUCHERNUMBER": "C784",
+  "BUYERSECTOR": "Retail",
+  "BUYERTYPE": "B2C",
+  "INDUSTRYCODE": "101",
+  "BUYERNINBRN": "CF12345678",
+  "BUYERADDRESS": "Plot 10 Kampala Road, Kampala",
+  "BUYERCITIZENSHIP": "UG",
+  "BUYEREMAIL": "customer@example.com",
+  "MOBILEPHONE": "+256700123456",
+  "BUYERLINEPHONE": "+256414123456",
+  "BUYERPLACEOFBUSI": "Kampala",
+  "BUYERREFERENCEN": "PO-7789",
+  "BUYERPASSPORTNUM": "B1234567",
+  "BUYERLEGALNAME": "Customer",
+  "BUSINESSNAME": "Customer Business Ltd",
+  "PRICEVATINCLUSIVE": "NO",
+  "PROJECTID": "PRJ-001",
+  "PROJECTNAME": "Tax Integration Pilot",
+  "DELIVERYTERMSCODE": "FOB",
+  "NONRESIDENTFLAG": "2",
+  "DEEMEDFLAG": "2",
+  "VERSION": "5.0.0",
+  "ERPUSER": "manager",
+  "APIKEY": "2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
+  "ORGTIN": "1017918269",
+  "WINDOWSUSER": "svc_etax",
+  "IPADDRESS": "192.168.1.20",
+  "MACADDRESS": "00-1A-2B-3C-4D-5E",
+  "SYSTEMNAME": "ERP-SERVER-01",
+  "REASONS": [
+    {
+      "REASONCODE": "101",
+      "REASON": "Buyer Refused"
+    }
+  ],
+  "BRANCH": "Kampala HQ",
+  "INVENTORIES": [
+    {
+      "PRODUCTCODE": "ALTQTYSAMPLE002",
+      "QTY": "2",
+      "MEASUREUNITS": "Pcs",
+      "AMOUNT": "726392.25",
+      "DISCOUNT": "0",
+      "DISCOUNTPCT": "0",
+      "RATE": "726392.25",
+      "TAX": "130750.61",
+      "TAXRATE": "0.18",
+      "TAXCODE": "A2"
+    }
+  ]
+}
+```
+
+Sample curl:
+
+```bash
+curl -X POST "http://localhost/etaxware-api/api/{adapter}/uploaddebitnote" \
+  -H "Content-Type: application/json" \
+  --data-raw '{
+    "VOUCHERNUMBER":"BATINV008",
+    "CUSTOMERACCOUNT":"CUST-0002",
+    "BUYERTIN":"1012345678",
+    "CURRENCY":"USD",
+    "VOUCHERTYPE":"Debit Note",
+    "VOUCHERTYPENAME":"Debit Note",
+    "VOUCHERREF":"ERP-DN-REF-008",
+    "ORIVOUCHERNUMBER":"C784",
+    "BUYERSECTOR":"Retail",
+    "BUYERTYPE":"B2C",
+    "INDUSTRYCODE":"101",
+    "BUYERNINBRN":"CF12345678",
+    "BUYERADDRESS":"Plot 10 Kampala Road, Kampala",
+    "BUYERCITIZENSHIP":"UG",
+    "BUYEREMAIL":"customer@example.com",
+    "MOBILEPHONE":"+256700123456",
+    "BUYERLINEPHONE":"+256414123456",
+    "BUYERPLACEOFBUSI":"Kampala",
+    "BUYERREFERENCEN":"PO-7789",
+    "BUYERPASSPORTNUM":"B1234567",
+    "BUYERLEGALNAME":"Customer",
+    "BUSINESSNAME":"Customer Business Ltd",
+    "PRICEVATINCLUSIVE":"NO",
+    "PROJECTID":"PRJ-001",
+    "PROJECTNAME":"Tax Integration Pilot",
+    "DELIVERYTERMSCODE":"FOB",
+    "NONRESIDENTFLAG":"2",
+    "DEEMEDFLAG":"2",
+    "VERSION":"5.0.0",
+    "ERPUSER":"manager",
+    "APIKEY":"2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
+    "ORGTIN":"1017918269",
+    "WINDOWSUSER":"svc_etax",
+    "IPADDRESS":"192.168.1.20",
+    "MACADDRESS":"00-1A-2B-3C-4D-5E",
+    "SYSTEMNAME":"ERP-SERVER-01",
+    "REASONS":[{"REASONCODE":"101","REASON":"Buyer Refused"}],
+    "BRANCH":"Kampala HQ",
+    "INVENTORIES":[{"PRODUCTCODE":"ALTQTYSAMPLE002","QTY":"2","MEASUREUNITS":"Pcs","AMOUNT":"726392.25","DISCOUNT":"0","DISCOUNTPCT":"0","RATE":"726392.25","TAX":"130750.61","TAXRATE":"0.18","TAXCODE":"A2"}]
+  }'
+```
+
+Sample business validation response:
+
+```json
+{
+  "response": {
+    "responseCode": "-999",
+    "responseMessage": "No original invoice number was supplied"
+  },
+  "data": {
+    "INVID": "",
+    "INVNO": "",
+    "ISSUEDT": "",
+    "FDN": "",
+    "QRCODE": ""
+  }
+}
+```
+
+Sample success response:
+
+```json
+{
+  "response": {
+    "responseCode": "00",
+    "responseMessage": "The operation was successful"
+  },
+  "data": {
+    "INVID": "4010242152271517353",
+    "INVNO": "DN-SAMPLE-001",
+    "ISSUEDT": "2026-05-07 11:25:00",
+    "FDN": "102180132712",
+    "QRCODE": "https://efris.ura.go.ug/qr/debit-note-sample"
+  }
 }
 ```
 
