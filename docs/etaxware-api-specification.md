@@ -1,11 +1,15 @@
 # eTaxWare API Specification
 
-Last updated: 2026-05-07
+Last updated: 2026-05-09
 
 ## 0. Version and Change Tracking
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 2.1.28 | 2026-05-09 | Added XML response payload samples for all implemented endpoints in section 5.2.6 and added missing Section 10 JSON examples for `/checktaxpayer`, `/voidcreditnote`, and `/` (index). |
+| 2.1.27 | 2026-05-09 | Added Section 10 JSON examples (request, curl, and sample responses) for `/fetchproduct`, `/stockin`, `/stockout`, and `/stocktransfer`; renumbered Section 10 sequence to keep contiguous ordering. |
+| 2.1.26 | 2026-05-09 | Added Section 10 JSON examples (request, curl, and sample responses) for `/batchstockin`, `/batchstockout`, and `/batchstocktransfer`, including line-level `summary` and `lineResults` outcomes. |
+| 2.1.25 | 2026-05-09 | Documented line-level batch response contracts for `/batchstockin`, `/batchstockout`, and `/batchstocktransfer` (`data.summary`, `data.lineResults`), added `/batchstocktransfer` endpoint documentation, and aligned route catalog/validation notes with current v15 behavior. |
 | 2.1.24 | 2026-05-07 | Replaced remaining empty placeholder values in Section 10 sample payloads/responses (including `/validatetin`, `/queryinvoice`, `/uploadproduct`, and `/uploadinvoice`) with inferred dummy data. |
 | 2.1.23 | 2026-05-07 | Replaced empty sample values in Section 10 `/uploadcreditnote` and `/uploaddebitnote` full payload examples with inferred dummy data for clearer implementation guidance. |
 | 2.1.22 | 2026-05-07 | Expanded Section 10 `/uploadcreditnote` and `/uploaddebitnote` sample request/curl payloads with fuller business fields for production-like examples. |
@@ -144,10 +148,11 @@ Use this glossary when interpreting `response.responseCode` values in endpoint r
 | Code | Meaning | Typical source area | Integration note |
 | --- | --- | --- | --- |
 | `00` | Operation successful | Most endpoints | Business success indicator; still check returned `data` content for context-specific values. |
-| `45` | Partial/mixed batch stock result | `/batchstockin` | Indicates at least one line did not complete cleanly; inspect response message and line-level outcomes. |
+| `45` | Partial/mixed batch stock result | `/batchstockin`, `/batchstockout`, `/batchstocktransfer` | Indicates at least one line did not complete cleanly; inspect response message and line-level outcomes. |
 | `99` | Generic business failure or record state conflict | Multiple endpoints | Commonly used for not found/already processed/operation not successful conditions. |
 | `0099` | User not allowed to perform function | Permission checks in endpoint handlers | Caller authenticated but lacks required operation permission. |
 | `-999` | Mandatory business field missing/invalid | Multiple endpoint validators | Common fail-fast validation code (for example missing voucher number, missing reason, missing TIN). |
+| `-997` | Missing line-level required fields | Batch stock validators | One or more batch inventory lines are missing required `PRODUCTCODE` and/or `QTY`. |
 | `-998` | Commodity code missing | `/checktaxpayer` validator | Specific validation for missing `COMMODITYCODE`. |
 | `1000` | No parameters sent | Pre-route gate | Request body/query key envelope is missing or empty. |
 | `1001` | API key missing | Pre-route gate | Missing `APIKEY` in body/query. |
@@ -259,6 +264,7 @@ Validation reference:
 | `/batchstockin` | `Api->batchstockin` | Implemented |
 | `/uploadcommoditycode` | `Api->uploadcommoditycode` | Not implemented in current Api class |
 | `/batchstockout` | `Api->batchstockout` | Implemented |
+| `/batchstocktransfer` | `Api->batchstocktransfer` | Implemented |
 | `/stocktransfer` | `Api->stocktransfer` | Implemented |
 | `/uploadinvoice` | `Api->uploadinvoice` | Implemented |
 | `/queryinvoice` | `Api->queryinvoice` | Implemented |
@@ -298,6 +304,9 @@ JSON-to-XML semantic equivalence (known endpoint differences):
 | `/stocktransfer` | `SOURCEBRANCH` | `SOURCEINVENTORIES/INVENTORY/LOCATION` | Source branch |
 | `/stocktransfer` | `DESTBRANCH` | `DESTINATIONINVENTORIES/INVENTORY/LOCATION` | Destination branch |
 | `/stocktransfer` | `PRODUCTCODE`, `QTY` | `SOURCEINVENTORIES/INVENTORY/PRODUCTCODE`, `SOURCEINVENTORIES/INVENTORY/QTY` | Product and quantity to transfer |
+| `/batchstocktransfer` | `SOURCEBRANCH` | `SOURCEBRANCH` (or source inventory location context) | Source branch |
+| `/batchstocktransfer` | `DESTBRANCH` | `DESTBRANCH` (or destination inventory location context) | Destination branch |
+| `/batchstocktransfer` | `INVENTORIES[]` (`PRODUCTCODE`, `QTY`) | `INVENTORIES/INVENTORY` (`PRODUCTCODE`, `QTY`) | Batch transfer line collection |
 
 Endpoint-specific XML nodes:
 
@@ -314,6 +323,7 @@ Endpoint-specific XML nodes:
 | `/batchstockin` | `STOCKINTYPE`, `VOUCHERTYPE`, `VOUCHERTYPENAME`, `VOUCHERNUMBER`, `VOUCHERREF`, `DESTINATIONINVENTORIES/INVENTORY` (with `PRODUCTCODE`, `QTY`, `RATE`) | `INVENTORIES/INVENTORY` (legacy naming in some clients), `PRODUCTIONDATE`, `SUPPLIERTIN`, `SUPPLIERNAME` |
 | `/stockout` | `PRODUCTCODE`, `ADJUSTMENTTYPE`, `QTY` | `REMARKS`, `BATCHNUMBER` |
 | `/batchstockout` | `VOUCHERTYPE`, `VOUCHERTYPENAME`, `VOUCHERNUMBER`, `VOUCHERREF`, `INVENTORIES/INVENTORY` (with `PRODUCTCODE`, `QTY`) | `RATE` (inventory line), `ADJUSTMENTTYPE`, `REMARKS` |
+| `/batchstocktransfer` | `VOUCHERNUMBER`, `SOURCEBRANCH`, `DESTBRANCH`, `INVENTORIES/INVENTORY` (with `PRODUCTCODE`, `QTY`) | `REMARKS`, `VOUCHERREF`, `VOUCHERTYPE`, `VOUCHERTYPENAME` |
 | `/stocktransfer` | `VOUCHERNUMBER`, `SOURCEINVENTORIES/INVENTORY` (with `PRODUCTCODE`, `QTY`, `LOCATION`), `DESTINATIONINVENTORIES/INVENTORY` (with `LOCATION`) | `PRODUCTCODE`, `SOURCEBRANCH`, `DESTBRANCH`, `QTY`, `REMARKS` (legacy/flat naming), `STOCKITEMNAME`, `RATE`, `VOUCHERREF`, `VOUCHERTYPE`, `VOUCHERTYPENAME` |
 | `/uploadinvoice` | `VOUCHERTYPE`, `VOUCHERTYPENAME`, `VOUCHERNUMBER`, `VOUCHERREF`, `CURRENCY`, `INDUSTRYCODE`, `BUYERLEGALNAME`, `BUYERCITIZENSHIP`, `BUYERTYPE`, `INVENTORIES/INVENTORY` | `PRICEVATINCLUSIVE`, `PROJECTID`, `PROJECTNAME`, `DELIVERYTERMCODE`, `NONRESIDENTFLAG` |
 | `/uploadcreditnote` | `VOUCHERTYPE`, `VOUCHERTYPENAME`, `VOUCHERNUMBER`, `VOUCHERREF`, `ORIVOUCHERNUMBER`, `REASONS/REASON` (`REASONCODE`, `REASON`), `INVENTORIES/INVENTORY` | None |
@@ -337,7 +347,7 @@ Sample XML payload (for POST):
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
@@ -360,7 +370,7 @@ Returned fields:
 | response.responseMessage | API outcome message | Yes | `It Works!` |
 | data | Endpoint payload container | Yes | `[]` |
 
-#### POST /testapi
+#### POST /testapi (XML sample)
 
 - Purpose: service health check (alternate)
 - Handler: `testapi()`
@@ -372,7 +382,7 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
@@ -397,7 +407,7 @@ Returned fields:
 
 ### 5.2.2 Taxpayer and currency lookups
 
-#### POST /validatetin
+#### POST /validatetin (XML sample)
 
 - Purpose: validate and fetch taxpayer details
 - Permission: `QUERYTAXPAYER`
@@ -414,13 +424,13 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
   <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
   <SYSTEMNAME>Tally Prime</SYSTEMNAME>
-  <TIN>1017918269</TIN>
+  <TIN>9083746521</TIN>
 </REQUEST>
 ```
 
@@ -429,7 +439,7 @@ Accepted parameters:
 | Technical name | Business name | Mandatory flag | Sample data |
 | --- | --- | --- | --- |
 | See section 3.1 common fields | Authentication and audit metadata (applies to all endpoints) | Yes | `VERSION`, `APIKEY`, `ORGTIN`, `ERPUSER`, `WINDOWSUSER`, `IPADDRESS`, `MACADDRESS`, `SYSTEMNAME` |
-| TIN | Taxpayer Identification Number to validate | Yes | `1017918269` |
+| TIN | Taxpayer Identification Number to validate | Yes | `9083746521` |
 
 Returned fields:
 
@@ -444,7 +454,7 @@ Returned fields:
 | data.CONTACTEMAIL | Contact email | Conditional | `` |
 | data.ADDRESS | Taxpayer address | Conditional | `` |
 
-#### POST /checktaxpayer
+#### POST /checktaxpayer (XML sample)
 
 - Purpose: determine taxpayer type and commodity taxpayer profile
 - Permission: `QUERYTAXPAYER`
@@ -463,13 +473,13 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
   <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
   <SYSTEMNAME>Tally Prime</SYSTEMNAME>
-  <TIN>1017918269</TIN>
+  <TIN>9083746521</TIN>
   <COMMODITYCODE>101</COMMODITYCODE>
 </REQUEST>
 ```
@@ -479,7 +489,7 @@ Accepted parameters:
 | Technical name | Business name | Mandatory flag | Sample data |
 | --- | --- | --- | --- |
 | See section 3.1 common fields | Authentication and audit metadata (applies to all endpoints) | Yes | `VERSION`, `APIKEY`, `ORGTIN`, `ERPUSER`, `WINDOWSUSER`, `IPADDRESS`, `MACADDRESS`, `SYSTEMNAME` |
-| TIN | Taxpayer Identification Number | Yes | `1017918269` |
+| TIN | Taxpayer Identification Number | Yes | `9083746521` |
 | COMMODITYCODE | Commodity classification code | Yes | `101` |
 
 Returned fields:
@@ -491,7 +501,7 @@ Returned fields:
 | data.TAXPAYERTYPE | Taxpayer type code | Conditional | `1` |
 | data.COMMODITYTAXPAYERTYPE | Commodity taxpayer type code | Conditional | `2` |
 
-#### POST /currencyquery
+#### POST /currencyquery (XML sample)
 
 - Purpose: fetch configured currency rates
 - Permission: `FETCHCURRENCYRATES`
@@ -505,7 +515,7 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
@@ -530,7 +540,7 @@ Returned fields:
 
 ### 5.2.3 Product and stock operations
 
-#### POST /uploadproduct
+#### POST /uploadproduct (XML sample)
 
 - Purpose: create/update product in EFRIS and sync into local tables
 - Permission: `UPLOADPRODUCT`
@@ -553,7 +563,7 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
@@ -599,7 +609,7 @@ Returned fields:
 | data.PRODID | EFRIS product identifier | Conditional | `1419845115243627714` |
 | data.SERVICEMARK | Service marker | Conditional | `102` |
 
-#### POST /fetchproduct
+#### POST /fetchproduct (XML sample)
 
 - Purpose: query product from EFRIS and return tax/status profile
 - Permission: `FETCHPRODUCT`
@@ -614,7 +624,7 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
@@ -645,7 +655,7 @@ Returned fields:
 | data.STATUS | Product status | Conditional | `Active` |
 | data.SERVICEMARK | Service marker | Conditional | `102` |
 
-#### POST /stockin
+#### POST /stockin (XML sample)
 
 - Purpose: add stock for one product
 - Permission: `STOCKIN`
@@ -665,7 +675,7 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
@@ -675,7 +685,7 @@ Sample XML payload:
   <STOCKINTYPE>101</STOCKINTYPE>
   <UNITPRICE>1000</UNITPRICE>
   <QTY>10</QTY>
-  <SUPPLIERTIN>1017918269</SUPPLIERTIN>
+  <SUPPLIERTIN>9083746521</SUPPLIERTIN>
   <SUPPLIERNAME>Sample Supplier</SUPPLIERNAME>
 </REQUEST>
 ```
@@ -691,7 +701,7 @@ Accepted parameters:
 | QTY | Quantity to add | Yes | `10` |
 | PRODUCTIONDATE | Production date (manufacture mode) | Conditional | `2026-04-25` |
 | BATCHNUMBER | Batch number (manufacture mode) | Conditional | `BATCH-001` |
-| SUPPLIERTIN | Supplier TIN | No | `1017918269` |
+| SUPPLIERTIN | Supplier TIN | No | `9083746521` |
 | SUPPLIERNAME | Supplier legal name | No | `Sample Supplier` |
 
 Returned fields:
@@ -702,7 +712,7 @@ Returned fields:
 | response.responseMessage | API outcome message | Yes | `The operation was successful` |
 | data | Endpoint payload container | Yes | `[]` |
 
-#### POST /batchstockin
+#### POST /batchstockin (XML sample)
 
 - Purpose: add stock for multiple products (batch)
 - Permission: `STOCKIN`
@@ -724,7 +734,7 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
@@ -758,18 +768,25 @@ Accepted parameters:
 | DESTINATIONINVENTORIES[] | Destination inventory line collection | Yes | `[{"PRODUCTCODE":"SP-100","QTY":"10","RATE":"1000"}]` |
 | INVENTORIES[] | Inventory line collection (legacy naming) | Conditional | `[{"PRODUCTCODE":"SP-100","QTY":"10","RATE":"1000"}]` |
 | PRODUCTIONDATE | Production date (when `STOCKINTYPE == 103`) | Conditional | `2026-04-25` |
-| SUPPLIERTIN | Supplier TIN | No | `1017918269` |
+| SUPPLIERTIN | Supplier TIN | No | `9083746521` |
 | SUPPLIERNAME | Supplier name | No | `Sample Supplier` |
 
 Returned fields:
 
 | Technical name | Business name | Mandatory flag | Sample data |
 | --- | --- | --- | --- |
-| response.responseCode | API outcome code | Yes | `00` / `45` / `-999` / `99` |
+| response.responseCode | API outcome code | Yes | `00` / `45` / `-999` / `-998` / `99` |
 | response.responseMessage | API outcome message | Yes | `The operation was successful` |
-| data | Endpoint payload container | Yes | `[]` |
+| data.voucherNumber | Voucher number echoed for correlation | Conditional | `GRN-001` |
+| data.voucherRef | Voucher reference echoed for correlation | Conditional | `ERP-GRN-001` |
+| data.stockInType | Stock-in type used for request | Conditional | `101` |
+| data.summary.totalLines | Total input lines received | Conditional | `3` |
+| data.summary.successCount | Number of successful lines | Conditional | `1` |
+| data.summary.failureCount | Number of failed lines | Conditional | `2` |
+| data.summary.skippedCount | Number of skipped lines (for example service items) | Conditional | `0` |
+| data.lineResults[] | Per-line outcomes | Conditional | `[ {"lineNo":1,"productCode":"SP-100","qty":"10","status":"SUCCESS","code":"00","message":"The operation was successful"}, {"lineNo":2,"productCode":"BAD-CODE","qty":"1","status":"ERROR","code":"658","message":"goodsCode does not exist!"} ]` |
 
-#### POST /stockout
+#### POST /stockout (XML sample)
 
 - Purpose: adjust stock down for one product
 - Permission: `STOCKOUT`
@@ -788,7 +805,7 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
@@ -816,10 +833,10 @@ Returned fields:
 | Technical name | Business name | Mandatory flag | Sample data |
 | --- | --- | --- | --- |
 | response.responseCode | API outcome code | Yes | `00` / `99` / `659` |
-| response.responseMessage | API outcome message | Yes | `The operation was successfully` |
+| response.responseMessage | API outcome message | Yes | `The operation was successful` |
 | data | Endpoint payload container | Yes | `[]` |
 
-#### POST /batchstockout
+#### POST /batchstockout (XML sample)
 
 - Purpose: adjust stock down for multiple products
 - Permission: `STOCKOUT`
@@ -840,7 +857,7 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
@@ -879,11 +896,17 @@ Returned fields:
 
 | Technical name | Business name | Mandatory flag | Sample data |
 | --- | --- | --- | --- |
-| response.responseCode | API outcome code | Yes | `00` / `-999` / `99` / `659` |
-| response.responseMessage | API outcome message | Yes | `The operation was successfully` |
-| data | Endpoint payload container | Yes | `[]` |
+| response.responseCode | API outcome code | Yes | `00` / `45` / `-999` / `-998` / `99` |
+| response.responseMessage | API outcome message | Yes | `The operation was successful` |
+| data.voucherNumber | Voucher number echoed for correlation | Conditional | `ADJ-001` |
+| data.voucherRef | Voucher reference echoed for correlation | Conditional | `ERP-ADJ-001` |
+| data.adjustmentType | Adjustment type used for request | Conditional | `102` |
+| data.summary.totalLines | Total input lines received | Conditional | `3` |
+| data.summary.successCount | Number of successful lines | Conditional | `1` |
+| data.summary.failureCount | Number of failed lines | Conditional | `2` |
+| data.lineResults[] | Per-line outcomes | Conditional | `[ {"lineNo":1,"productCode":"SP-100","qty":"1","status":"SUCCESS","code":"00","message":"The operation was successful"}, {"lineNo":2,"productCode":"BAD-CODE","qty":"1","status":"ERROR","code":"2196","message":"commodityGoodsId and goodsCode cannot be empty at the same time!"} ]` |
 
-#### POST /stocktransfer
+#### POST /stocktransfer (XML sample)
 
 - Purpose: transfer stock between branches
 - Permission: `TRANSFERPRODUCTSTOCK`
@@ -907,7 +930,7 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
@@ -958,9 +981,88 @@ Returned fields:
 | response.responseMessage | API outcome message | Yes | `The operation was successful` |
 | data | Endpoint payload container | Yes | `[]` |
 
+#### POST /batchstocktransfer (XML sample)
+
+- Purpose: transfer stock for multiple products between branches with line-level results
+- Permission: `TRANSFERPRODUCTSTOCK`
+- Required fields:
+  - `VOUCHERNUMBER`
+  - `SOURCEBRANCH`, `DESTBRANCH`
+  - `INVENTORIES[]` with per-line `PRODUCTCODE`, `QTY`
+- Optional fields:
+  - `REMARKS`, `VOUCHERREF`, `VOUCHERTYPE`, `VOUCHERTYPENAME`
+- Common business errors:
+  - `-999` when `VOUCHERNUMBER` is missing
+  - `-998` when inventory lines are missing
+  - `45` when response is partial/mixed across lines
+- Mapping behavior:
+  - Source and destination branch values are normalized through branch mappings when available before transfer submission.
+  - Product codes are resolved through product mappings when available before transfer submission and persistence.
+
+Sample XML payload:
+
+```xml
+<REQUEST>
+  <VERSION>5.0.0</VERSION>
+  <APIKEY>your-api-key</APIKEY>
+  <ORGTIN>9083746521</ORGTIN>
+  <ERPUSER>manager</ERPUSER>
+  <WINDOWSUSER>devuser</WINDOWSUSER>
+  <IPADDRESS>127.0.0.1</IPADDRESS>
+  <MACADDRESS>00-00-00-00-00-00</MACADDRESS>
+  <SYSTEMNAME>Tally Prime</SYSTEMNAME>
+  <VOUCHERTYPE>Stock Journal</VOUCHERTYPE>
+  <VOUCHERTYPENAME>Stock Journal</VOUCHERTYPENAME>
+  <VOUCHERNUMBER>BST-001</VOUCHERNUMBER>
+  <VOUCHERREF>ERP-BST-001</VOUCHERREF>
+  <SOURCEBRANCH>Kampala HQ</SOURCEBRANCH>
+  <DESTBRANCH>Jinja</DESTBRANCH>
+  <REMARKS>Branch balancing</REMARKS>
+  <INVENTORIES>
+    <INVENTORY>
+      <PRODUCTCODE>SP-100</PRODUCTCODE>
+      <QTY>5</QTY>
+    </INVENTORY>
+    <INVENTORY>
+      <PRODUCTCODE>SP-200</PRODUCTCODE>
+      <QTY>2</QTY>
+    </INVENTORY>
+  </INVENTORIES>
+</REQUEST>
+```
+
+Accepted parameters:
+
+| Technical name | Business name | Mandatory flag | Sample data |
+| --- | --- | --- | --- |
+| See section 3.1 common fields | Authentication and audit metadata (applies to all endpoints) | Yes | `VERSION`, `APIKEY`, `ORGTIN`, `ERPUSER`, `WINDOWSUSER`, `IPADDRESS`, `MACADDRESS`, `SYSTEMNAME` |
+| VOUCHERNUMBER | Voucher number used for duplicate-upload control and correlation | Yes | `BST-001` |
+| SOURCEBRANCH | Source branch name/code | Yes | `Kampala HQ` |
+| DESTBRANCH | Destination branch name/code | Yes | `Jinja` |
+| INVENTORIES[] | Inventory line collection | Yes | `[ {"PRODUCTCODE":"SP-100","QTY":"5"}, {"PRODUCTCODE":"SP-200","QTY":"2"} ]` |
+| VOUCHERREF | Voucher reference | No | `ERP-BST-001` |
+| VOUCHERTYPE | Voucher type | No | `Stock Journal` |
+| VOUCHERTYPENAME | Voucher type display name | No | `Stock Journal` |
+| REMARKS | Transfer remarks | No | `Branch balancing` |
+
+Returned fields:
+
+| Technical name | Business name | Mandatory flag | Sample data |
+| --- | --- | --- | --- |
+| response.responseCode | API outcome code | Yes | `00` / `45` / `-999` / `-998` / `99` |
+| response.responseMessage | API outcome message | Yes | `The operation was successful` |
+| data.voucherNumber | Voucher number echoed for correlation | Conditional | `BST-001` |
+| data.voucherRef | Voucher reference echoed for correlation | Conditional | `ERP-BST-001` |
+| data.sourceBranch | Mapped source branch identifier/name used by transfer flow | Conditional | `912550336846912433` |
+| data.destBranch | Mapped destination branch identifier/name used by transfer flow | Conditional | `592478656342375774` |
+| data.summary.totalLines | Total input lines received | Conditional | `3` |
+| data.summary.successCount | Number of successful lines | Conditional | `1` |
+| data.summary.failureCount | Number of failed lines | Conditional | `2` |
+| data.lineResults[] | Per-line outcomes | Conditional | `[ {"lineNo":1,"productCode":"SP-100","qty":"1","status":"SUCCESS","code":"00","message":"The operation was successful"}, {"lineNo":2,"productCode":"BAD-CODE","qty":"1","status":"ERROR","code":"658","message":"commodityGoodsId or goodsCode does not exist!"} ]` |
+
 ### 5.2.4 Sales, credit note, debit note
 
-#### POST /uploadinvoice
+#### POST /uploadinvoice (XML sample)
 
 - Purpose: upload sales invoice
 - Permission: `UPLOADINVOICE`
@@ -983,7 +1085,7 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
@@ -1069,7 +1171,7 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
@@ -1141,7 +1243,7 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
@@ -1195,7 +1297,7 @@ Returned fields:
 | data.FDN | Fiscal device number | Conditional | `102180132712` |
 | data.QRCODE | Encoded QR content | Conditional | `https://...` |
 
-#### POST /queryinvoice
+#### POST /queryinvoice (XML sample)
 
 - Purpose: query invoice/credit note/debit note status and metadata
 - Permission: `DOWNLOADINVOICE`
@@ -1216,7 +1318,7 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
@@ -1270,7 +1372,7 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
@@ -1320,7 +1422,7 @@ Sample XML payload:
 <REQUEST>
   <VERSION>5.0.0</VERSION>
   <APIKEY>your-api-key</APIKEY>
-  <ORGTIN>1017918269</ORGTIN>
+  <ORGTIN>9083746521</ORGTIN>
   <ERPUSER>manager</ERPUSER>
   <WINDOWSUSER>devuser</WINDOWSUSER>
   <IPADDRESS>127.0.0.1</IPADDRESS>
@@ -1350,6 +1452,235 @@ Returned fields:
 | response.responseCode | API outcome code | Yes | `00` / `300` / `500` |
 | response.responseMessage | API outcome message | Yes | `The operation to send an email was successful` |
 | data | Endpoint payload container | Yes | `[]` |
+
+### 5.2.6 XML Response Payload Samples (Implemented Endpoints)
+
+The XML adapter returns business outcomes using the envelope below:
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>The operation was successful</RETURNMESSAGE>
+</RESPONSE>
+```
+
+Endpoint-specific XML response examples:
+
+#### GET/POST /
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>It Works!</RETURNMESSAGE>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /testapi
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>It Works!</RETURNMESSAGE>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /validatetin
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>The operation to query the taxpayer was successful</RETURNMESSAGE>
+  <DATA>
+    <NINBRN>/80020002851201</NINBRN>
+    <LEGALNAME>FTS GROUP CONSULTING SERVICES LIMITED</LEGALNAME>
+  </DATA>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /checktaxpayer
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>The operation to check taxpayer was successful</RETURNMESSAGE>
+  <DATA>
+    <TAXPAYERTYPE>1</TAXPAYERTYPE>
+    <COMMODITYTAXPAYERTYPE>2</COMMODITYTAXPAYERTYPE>
+  </DATA>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /currencyquery
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>The operation to fetch the currencies was successful</RETURNMESSAGE>
+  <DATA>
+    <UGX>1</UGX>
+    <USD>3743.2163</USD>
+  </DATA>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /uploadproduct
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>The operation was successful</RETURNMESSAGE>
+  <DATA>
+    <PRODID>1419845115243627714</PRODID>
+    <STATUS>Active</STATUS>
+  </DATA>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /fetchproduct
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>The operation was successful</RETURNMESSAGE>
+  <DATA>
+    <PRODUCTCODE>SP-100</PRODUCTCODE>
+    <ITEMNAME>Sample Product</ITEMNAME>
+  </DATA>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /stockin
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>The operation was successful</RETURNMESSAGE>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /batchstockin
+
+```xml
+<RESPONSE>
+  <RETURNCODE>45</RETURNCODE>
+  <RETURNMESSAGE>Partial Error. Contact your system administrator!</RETURNMESSAGE>
+  <DATA>
+    <SUMMARY><TOTALLINES>3</TOTALLINES><SUCCESSCOUNT>1</SUCCESSCOUNT><FAILURECOUNT>2</FAILURECOUNT><SKIPPEDCOUNT>0</SKIPPEDCOUNT></SUMMARY>
+  </DATA>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /stockout
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>The operation was successful</RETURNMESSAGE>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /batchstockout
+
+```xml
+<RESPONSE>
+  <RETURNCODE>45</RETURNCODE>
+  <RETURNMESSAGE>Partial Error. Contact your system administrator!</RETURNMESSAGE>
+  <DATA>
+    <SUMMARY><TOTALLINES>3</TOTALLINES><SUCCESSCOUNT>1</SUCCESSCOUNT><FAILURECOUNT>2</FAILURECOUNT></SUMMARY>
+  </DATA>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /stocktransfer
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>The operation was successful</RETURNMESSAGE>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /batchstocktransfer
+
+```xml
+<RESPONSE>
+  <RETURNCODE>45</RETURNCODE>
+  <RETURNMESSAGE>Partial Error. Contact your system administrator!</RETURNMESSAGE>
+  <DATA>
+    <SUMMARY><TOTALLINES>3</TOTALLINES><SUCCESSCOUNT>1</SUCCESSCOUNT><FAILURECOUNT>2</FAILURECOUNT></SUMMARY>
+  </DATA>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /uploadinvoice
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>The operation was successful</RETURNMESSAGE>
+  <DATA>
+    <INVID>2010242152271517353</INVID>
+    <INVNO>102180132712</INVNO>
+  </DATA>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /queryinvoice
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>The operation was successful</RETURNMESSAGE>
+  <DATA>
+    <INVID>2010242152271517353</INVID>
+    <APPROVESTATUS>Approved</APPROVESTATUS>
+  </DATA>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /uploadcreditnote
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>The operation was successful</RETURNMESSAGE>
+  <DATA>
+    <INVID>3010242152271517353</INVID>
+    <INVNO>CN-SAMPLE-001</INVNO>
+  </DATA>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /voidcreditnote
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>The operation was successful</RETURNMESSAGE>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /uploaddebitnote
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>The operation was successful</RETURNMESSAGE>
+  <DATA>
+    <INVID>4010242152271517353</INVID>
+    <INVNO>DN-SAMPLE-001</INVNO>
+  </DATA>
+</RESPONSE>
+```
+
+#### 5.2.6 POST /sendmail
+
+```xml
+<RESPONSE>
+  <RETURNCODE>00</RETURNCODE>
+  <RETURNMESSAGE>The operation to send an email was successful</RETURNMESSAGE>
+</RESPONSE>
+```
 
 ## 6. Not Implemented in Current Class Set
 
@@ -1405,8 +1736,8 @@ These examples are intentionally practical and aligned to current runtime behavi
 ```json
 {
   "VERSION": "5.0.0",
-  "APIKEY": "2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-  "ORGTIN": "1017918269",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
   "ERPUSER": "manager",
   "WINDOWSUSER": "devuser",
   "IPADDRESS": "127.0.0.1",
@@ -1422,8 +1753,8 @@ Sample request:
 ```json
 {
   "VERSION": "5.0.0",
-  "APIKEY": "2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-  "ORGTIN": "1017918269",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
   "ERPUSER": "manager",
   "WINDOWSUSER": "devuser",
   "IPADDRESS": "127.0.0.1",
@@ -1439,8 +1770,8 @@ curl -X POST "http://localhost/etaxware-api/api/{adapter}/testapi" \
   -H "Content-Type: application/json" \
   --data-raw '{
     "VERSION":"5.0.0",
-    "APIKEY":"2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-    "ORGTIN":"1017918269",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
     "ERPUSER":"manager",
     "WINDOWSUSER":"devuser",
     "IPADDRESS":"127.0.0.1",
@@ -1468,14 +1799,14 @@ Sample request:
 ```json
 {
   "VERSION": "5.0.0",
-  "APIKEY": "2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-  "ORGTIN": "1017918269",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
   "ERPUSER": "manager",
   "WINDOWSUSER": "devuser",
   "IPADDRESS": "127.0.0.1",
   "MACADDRESS": "00-00-00-00-00-00",
   "SYSTEMNAME": "local",
-  "TIN": "1017918269"
+  "TIN": "9083746521"
 }
 ```
 
@@ -1486,14 +1817,14 @@ curl -X POST "http://localhost/etaxware-api/api/{adapter}/validatetin" \
   -H "Content-Type: application/json" \
   --data-raw '{
     "VERSION":"5.0.0",
-    "APIKEY":"2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-    "ORGTIN":"1017918269",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
     "ERPUSER":"manager",
     "WINDOWSUSER":"devuser",
     "IPADDRESS":"127.0.0.1",
     "MACADDRESS":"00-00-00-00-00-00",
     "SYSTEMNAME":"local",
-    "TIN":"1017918269"
+    "TIN":"9083746521"
   }'
 ```
 
@@ -1542,8 +1873,8 @@ Sample request:
 ```json
 {
   "VERSION": "5.0.0",
-  "APIKEY": "2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-  "ORGTIN": "1017918269",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
   "ERPUSER": "manager",
   "WINDOWSUSER": "devuser",
   "IPADDRESS": "127.0.0.1",
@@ -1559,8 +1890,8 @@ curl -X POST "http://localhost/etaxware-api/api/{adapter}/currencyquery" \
   -H "Content-Type: application/json" \
   --data-raw '{
     "VERSION":"5.0.0",
-    "APIKEY":"2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-    "ORGTIN":"1017918269",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
     "ERPUSER":"manager",
     "WINDOWSUSER":"devuser",
     "IPADDRESS":"127.0.0.1",
@@ -1592,8 +1923,8 @@ Sample request:
 ```json
 {
   "VERSION": "5.0.0",
-  "APIKEY": "2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-  "ORGTIN": "1017918269",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
   "ERPUSER": "manager",
   "WINDOWSUSER": "devuser",
   "IPADDRESS": "127.0.0.1",
@@ -1613,8 +1944,8 @@ curl -X POST "http://localhost/etaxware-api/api/{adapter}/queryinvoice" \
   -H "Content-Type: application/json" \
   --data-raw '{
     "VERSION":"5.0.0",
-    "APIKEY":"2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-    "ORGTIN":"1017918269",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
     "ERPUSER":"manager",
     "WINDOWSUSER":"devuser",
     "IPADDRESS":"127.0.0.1",
@@ -1676,8 +2007,8 @@ Sample request:
 ```json
 {
   "VERSION": "5.0.0",
-  "APIKEY": "2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-  "ORGTIN": "1017918269",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
   "ERPUSER": "manager",
   "WINDOWSUSER": "devuser",
   "IPADDRESS": "127.0.0.1",
@@ -1715,8 +2046,8 @@ curl -X POST "http://localhost/etaxware-api/api/{adapter}/uploadproduct" \
   -H "Content-Type: application/json" \
   --data-raw '{
     "VERSION":"5.0.0",
-    "APIKEY":"2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-    "ORGTIN":"1017918269",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
     "ERPUSER":"manager",
     "WINDOWSUSER":"devuser",
     "IPADDRESS":"127.0.0.1",
@@ -1775,8 +2106,8 @@ Sample request:
 ```json
 {
   "VERSION": "5.0.0",
-  "APIKEY": "2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-  "ORGTIN": "1017918269",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
   "ERPUSER": "manager",
   "WINDOWSUSER": "devuser",
   "IPADDRESS": "127.0.0.1",
@@ -1833,8 +2164,8 @@ curl -X POST "http://localhost/etaxware-api/api/{adapter}/uploadinvoice" \
   -H "Content-Type: application/json" \
   --data-raw '{
     "VERSION":"5.0.0",
-    "APIKEY":"2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-    "ORGTIN":"1017918269",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
     "ERPUSER":"manager",
     "WINDOWSUSER":"devuser",
     "IPADDRESS":"127.0.0.1",
@@ -1897,8 +2228,8 @@ Sample request:
 ```json
 {
   "VERSION": "5.0.0",
-  "APIKEY": "2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-  "ORGTIN": "1017918269",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
   "ERPUSER": "manager",
   "WINDOWSUSER": "devuser",
   "IPADDRESS": "127.0.0.1",
@@ -1918,8 +2249,8 @@ curl -X POST "http://localhost/etaxware-api/api/{adapter}/sendmail" \
   -H "Content-Type: application/json" \
   --data-raw '{
     "VERSION":"5.0.0",
-    "APIKEY":"2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-    "ORGTIN":"1017918269",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
     "ERPUSER":"manager",
     "WINDOWSUSER":"devuser",
     "IPADDRESS":"127.0.0.1",
@@ -1980,8 +2311,8 @@ Sample request:
   "DEEMEDFLAG": "2",
   "VERSION": "5.0.0",
   "ERPUSER": "manager",
-  "APIKEY": "2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-  "ORGTIN": "1017918269",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
   "WINDOWSUSER": "svc_etax",
   "IPADDRESS": "192.168.1.20",
   "MACADDRESS": "00-1A-2B-3C-4D-5E",
@@ -2046,8 +2377,8 @@ curl -X POST "http://localhost/etaxware-api/api/{adapter}/uploadcreditnote" \
     "DEEMEDFLAG":"2",
     "VERSION":"5.0.0",
     "ERPUSER":"manager",
-    "APIKEY":"2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-    "ORGTIN":"1017918269",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
     "WINDOWSUSER":"svc_etax",
     "IPADDRESS":"192.168.1.20",
     "MACADDRESS":"00-1A-2B-3C-4D-5E",
@@ -2131,8 +2462,8 @@ Sample request:
   "DEEMEDFLAG": "2",
   "VERSION": "5.0.0",
   "ERPUSER": "manager",
-  "APIKEY": "2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-  "ORGTIN": "1017918269",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
   "WINDOWSUSER": "svc_etax",
   "IPADDRESS": "192.168.1.20",
   "MACADDRESS": "00-1A-2B-3C-4D-5E",
@@ -2197,8 +2528,8 @@ curl -X POST "http://localhost/etaxware-api/api/{adapter}/uploaddebitnote" \
     "DEEMEDFLAG":"2",
     "VERSION":"5.0.0",
     "ERPUSER":"manager",
-    "APIKEY":"2PaYBJn9SEm0RjvnrqD23oVYDULhJDHPDqxoZnol",
-    "ORGTIN":"1017918269",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
     "WINDOWSUSER":"svc_etax",
     "IPADDRESS":"192.168.1.20",
     "MACADDRESS":"00-1A-2B-3C-4D-5E",
@@ -2242,6 +2573,739 @@ Sample success response:
     "FDN": "102180132712",
     "QRCODE": "https://efris.ura.go.ug/qr/debit-note-sample"
   }
+}
+```
+
+### 10.11 POST /fetchproduct
+
+Sample request:
+
+```json
+{
+  "VERSION": "5.0.0",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
+  "ERPUSER": "manager",
+  "WINDOWSUSER": "devuser",
+  "IPADDRESS": "127.0.0.1",
+  "MACADDRESS": "00-00-00-00-00-00",
+  "SYSTEMNAME": "local",
+  "PRODUCTCODE": "SP-100",
+  "ERPQTY": "0"
+}
+```
+
+Sample curl:
+
+```bash
+curl -X POST "http://localhost/etaxware-api/api/{adapter}/fetchproduct" \
+  -H "Content-Type: application/json" \
+  --data-raw '{
+    "VERSION":"5.0.0",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
+    "ERPUSER":"manager",
+    "WINDOWSUSER":"devuser",
+    "IPADDRESS":"127.0.0.1",
+    "MACADDRESS":"00-00-00-00-00-00",
+    "SYSTEMNAME":"local",
+    "PRODUCTCODE":"SP-100",
+    "ERPQTY":"0"
+  }'
+```
+
+Sample response:
+
+```json
+{
+  "response": {
+    "responseCode": "00",
+    "responseMessage": "The operation was successful"
+  },
+  "data": {
+    "PRODUCTCODE": "SP-100",
+    "ITEMNAME": "Sample Product",
+    "TAXRATE": "0.18",
+    "STATUS": "Active",
+    "SERVICEMARK": "102"
+  }
+}
+```
+
+### 10.12 POST /stockin
+
+Sample request:
+
+```json
+{
+  "VERSION": "5.0.0",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
+  "ERPUSER": "manager",
+  "WINDOWSUSER": "devuser",
+  "IPADDRESS": "127.0.0.1",
+  "MACADDRESS": "00-00-00-00-00-00",
+  "SYSTEMNAME": "local",
+  "PRODUCTCODE": "SP-100",
+  "STOCKINTYPE": "101",
+  "UNITPRICE": "1000",
+  "QTY": "10",
+  "SUPPLIERTIN": "",
+  "SUPPLIERNAME": ""
+}
+```
+
+Sample curl:
+
+```bash
+curl -X POST "http://localhost/etaxware-api/api/{adapter}/stockin" \
+  -H "Content-Type: application/json" \
+  --data-raw '{
+    "VERSION":"5.0.0",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
+    "ERPUSER":"manager",
+    "WINDOWSUSER":"devuser",
+    "IPADDRESS":"127.0.0.1",
+    "MACADDRESS":"00-00-00-00-00-00",
+    "SYSTEMNAME":"local",
+    "PRODUCTCODE":"SP-100",
+    "STOCKINTYPE":"101",
+    "UNITPRICE":"1000",
+    "QTY":"10",
+    "SUPPLIERTIN":"",
+    "SUPPLIERNAME":""
+  }'
+```
+
+Sample response:
+
+```json
+{
+  "response": {
+    "responseCode": "00",
+    "responseMessage": "The operation was successful"
+  },
+  "data": []
+}
+```
+
+### 10.13 POST /stockout
+
+Sample request:
+
+```json
+{
+  "VERSION": "5.0.0",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
+  "ERPUSER": "manager",
+  "WINDOWSUSER": "devuser",
+  "IPADDRESS": "127.0.0.1",
+  "MACADDRESS": "00-00-00-00-00-00",
+  "SYSTEMNAME": "local",
+  "PRODUCTCODE": "SP-100",
+  "ADJUSTMENTTYPE": "102",
+  "QTY": "1",
+  "REMARKS": "Damaged item"
+}
+```
+
+Sample curl:
+
+```bash
+curl -X POST "http://localhost/etaxware-api/api/{adapter}/stockout" \
+  -H "Content-Type: application/json" \
+  --data-raw '{
+    "VERSION":"5.0.0",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
+    "ERPUSER":"manager",
+    "WINDOWSUSER":"devuser",
+    "IPADDRESS":"127.0.0.1",
+    "MACADDRESS":"00-00-00-00-00-00",
+    "SYSTEMNAME":"local",
+    "PRODUCTCODE":"SP-100",
+    "ADJUSTMENTTYPE":"102",
+    "QTY":"1",
+    "REMARKS":"Damaged item"
+  }'
+```
+
+Sample response:
+
+```json
+{
+  "response": {
+    "responseCode": "00",
+    "responseMessage": "The operation was successful"
+  },
+  "data": []
+}
+```
+
+### 10.14 POST /stocktransfer
+
+Sample request:
+
+```json
+{
+  "VERSION": "5.0.0",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
+  "ERPUSER": "manager",
+  "WINDOWSUSER": "svc-etw",
+  "IPADDRESS": "127.0.0.1",
+  "MACADDRESS": "00-00-00-00-00-00",
+  "SYSTEMNAME": "ETW-LOCAL",
+  "VOUCHERTYPE": "Stock Journal",
+  "VOUCHERTYPENAME": "Stock Journal",
+  "VOUCHERNUMBER": "ST-SAMPLE-001",
+  "VOUCHERREF": "ST-SAMPLE-001",
+  "PRODUCTCODE": "19",
+  "SOURCEBRANCH": "Kampala HQ",
+  "DESTBRANCH": "Jinja",
+  "QTY": "1",
+  "REMARKS": "Branch restock"
+}
+```
+
+Sample curl:
+
+```bash
+curl -X POST "http://localhost/etaxware-api/api/{adapter}/stocktransfer" \
+  -H "Content-Type: application/json" \
+  --data-raw '{
+    "VERSION":"5.0.0",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
+    "ERPUSER":"manager",
+    "WINDOWSUSER":"svc-etw",
+    "IPADDRESS":"127.0.0.1",
+    "MACADDRESS":"00-00-00-00-00-00",
+    "SYSTEMNAME":"ETW-LOCAL",
+    "VOUCHERTYPE":"Stock Journal",
+    "VOUCHERTYPENAME":"Stock Journal",
+    "VOUCHERNUMBER":"ST-SAMPLE-001",
+    "VOUCHERREF":"ST-SAMPLE-001",
+    "PRODUCTCODE":"19",
+    "SOURCEBRANCH":"Kampala HQ",
+    "DESTBRANCH":"Jinja",
+    "QTY":"1",
+    "REMARKS":"Branch restock"
+  }'
+```
+
+Sample response:
+
+```json
+{
+  "response": {
+    "responseCode": "00",
+    "responseMessage": "The operation was successful"
+  },
+  "data": []
+}
+```
+
+### 10.15 POST /batchstockin
+
+Sample request:
+
+```json
+{
+  "VERSION": "5.0.0",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
+  "ERPUSER": "manager",
+  "WINDOWSUSER": "svc-etw",
+  "IPADDRESS": "127.0.0.1",
+  "MACADDRESS": "00-00-00-00-00-00",
+  "SYSTEMNAME": "ETW-LOCAL",
+  "VOUCHERTYPE": "Stock Journal",
+  "VOUCHERTYPENAME": "Stock Journal",
+  "VOUCHERNUMBER": "BIN-SAMPLE-001",
+  "VOUCHERREF": "BIN-SAMPLE-001",
+  "STOCKINTYPE": "102",
+  "SUPPLIERTIN": "",
+  "SUPPLIERNAME": "",
+  "INVENTORIES": [
+    {
+      "PRODUCTCODE": "19",
+      "QTY": "1",
+      "RATE": "1000"
+    },
+    {
+      "PRODUCTCODE": "RND-PROD-AAA",
+      "QTY": "1",
+      "RATE": "1000"
+    },
+    {
+      "PRODUCTCODE": "RND-PROD-BBB",
+      "QTY": "1",
+      "RATE": "1000"
+    }
+  ]
+}
+```
+
+Sample curl:
+
+```bash
+curl -X POST "http://localhost/etaxware-api/api/{adapter}/batchstockin" \
+  -H "Content-Type: application/json" \
+  --data-raw '{
+    "VERSION":"5.0.0",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
+    "ERPUSER":"manager",
+    "WINDOWSUSER":"svc-etw",
+    "IPADDRESS":"127.0.0.1",
+    "MACADDRESS":"00-00-00-00-00-00",
+    "SYSTEMNAME":"ETW-LOCAL",
+    "VOUCHERTYPE":"Stock Journal",
+    "VOUCHERTYPENAME":"Stock Journal",
+    "VOUCHERNUMBER":"BIN-SAMPLE-001",
+    "VOUCHERREF":"BIN-SAMPLE-001",
+    "STOCKINTYPE":"102",
+    "SUPPLIERTIN":"",
+    "SUPPLIERNAME":"",
+    "INVENTORIES":[
+      {"PRODUCTCODE":"19","QTY":"1","RATE":"1000"},
+      {"PRODUCTCODE":"RND-PROD-AAA","QTY":"1","RATE":"1000"},
+      {"PRODUCTCODE":"RND-PROD-BBB","QTY":"1","RATE":"1000"}
+    ]
+  }'
+```
+
+Sample response (all lines failed):
+
+```json
+{
+  "response": {
+    "responseCode": "99",
+    "responseMessage": "goodsCode does not exist!"
+  },
+  "data": {
+    "voucherNumber": "BIN-SAMPLE-001",
+    "voucherRef": "BIN-SAMPLE-001",
+    "stockInType": "102",
+    "summary": {
+      "totalLines": 3,
+      "successCount": 0,
+      "failureCount": 3,
+      "skippedCount": 0
+    },
+    "lineResults": [
+      {
+        "lineNo": 1,
+        "productCode": "19",
+        "qty": "1",
+        "status": "ERROR",
+        "code": "658",
+        "message": "goodsCode does not exist!"
+      },
+      {
+        "lineNo": 2,
+        "productCode": "RND-PROD-AAA",
+        "qty": "1",
+        "status": "ERROR",
+        "code": "658",
+        "message": "goodsCode does not exist!"
+      },
+      {
+        "lineNo": 3,
+        "productCode": "RND-PROD-BBB",
+        "qty": "1",
+        "status": "ERROR",
+        "code": "658",
+        "message": "goodsCode does not exist!"
+      }
+    ]
+  }
+}
+```
+
+### 10.16 POST /batchstockout
+
+Sample request:
+
+```json
+{
+  "VERSION": "5.0.0",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
+  "ERPUSER": "manager",
+  "WINDOWSUSER": "svc-etw",
+  "IPADDRESS": "127.0.0.1",
+  "MACADDRESS": "00-00-00-00-00-00",
+  "SYSTEMNAME": "ETW-LOCAL",
+  "VOUCHERTYPE": "Stock Journal",
+  "VOUCHERTYPENAME": "Stock Journal",
+  "VOUCHERNUMBER": "BOUT-SAMPLE-001",
+  "VOUCHERREF": "BOUT-SAMPLE-001",
+  "ADJUSTMENTTYPE": "102",
+  "REMARKS": "Batch stockout mixed-line sample",
+  "INVENTORIES": [
+    {
+      "PRODUCTCODE": "19",
+      "QTY": "1",
+      "RATE": "1000"
+    },
+    {
+      "PRODUCTCODE": "RND-PROD-CCC",
+      "QTY": "1",
+      "RATE": "1000"
+    },
+    {
+      "PRODUCTCODE": "RND-PROD-DDD",
+      "QTY": "1",
+      "RATE": "1000"
+    }
+  ]
+}
+```
+
+Sample curl:
+
+```bash
+curl -X POST "http://localhost/etaxware-api/api/{adapter}/batchstockout" \
+  -H "Content-Type: application/json" \
+  --data-raw '{
+    "VERSION":"5.0.0",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
+    "ERPUSER":"manager",
+    "WINDOWSUSER":"svc-etw",
+    "IPADDRESS":"127.0.0.1",
+    "MACADDRESS":"00-00-00-00-00-00",
+    "SYSTEMNAME":"ETW-LOCAL",
+    "VOUCHERTYPE":"Stock Journal",
+    "VOUCHERTYPENAME":"Stock Journal",
+    "VOUCHERNUMBER":"BOUT-SAMPLE-001",
+    "VOUCHERREF":"BOUT-SAMPLE-001",
+    "ADJUSTMENTTYPE":"102",
+    "REMARKS":"Batch stockout mixed-line sample",
+    "INVENTORIES":[
+      {"PRODUCTCODE":"19","QTY":"1","RATE":"1000"},
+      {"PRODUCTCODE":"RND-PROD-CCC","QTY":"1","RATE":"1000"},
+      {"PRODUCTCODE":"RND-PROD-DDD","QTY":"1","RATE":"1000"}
+    ]
+  }'
+```
+
+Sample response (partial/mixed):
+
+```json
+{
+  "response": {
+    "responseCode": "45",
+    "responseMessage": "Partial Error. Contact your system administrator! 19: commodityGoodsId and goodsCode cannot be empty at the same time!; RND-PROD-CCC: commodityGoodsId and goodsCode cannot be empty at the same time!"
+  },
+  "data": {
+    "voucherNumber": "BOUT-SAMPLE-001",
+    "voucherRef": "BOUT-SAMPLE-001",
+    "adjustmentType": "102",
+    "summary": {
+      "totalLines": 3,
+      "successCount": 1,
+      "failureCount": 2
+    },
+    "lineResults": [
+      {
+        "lineNo": 1,
+        "productCode": "19",
+        "qty": "1",
+        "status": "ERROR",
+        "code": "2196",
+        "message": "commodityGoodsId and goodsCode cannot be empty at the same time!"
+      },
+      {
+        "lineNo": 2,
+        "productCode": "RND-PROD-CCC",
+        "qty": "1",
+        "status": "ERROR",
+        "code": "2196",
+        "message": "commodityGoodsId and goodsCode cannot be empty at the same time!"
+      },
+      {
+        "lineNo": 3,
+        "productCode": "RND-PROD-DDD",
+        "qty": "1",
+        "status": "SUCCESS",
+        "code": "00",
+        "message": "The operation was successful"
+      }
+    ]
+  }
+}
+```
+
+### 10.17 POST /batchstocktransfer
+
+Sample request:
+
+```json
+{
+  "VERSION": "5.0.0",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
+  "ERPUSER": "manager",
+  "WINDOWSUSER": "svc-etw",
+  "IPADDRESS": "127.0.0.1",
+  "MACADDRESS": "00-00-00-00-00-00",
+  "SYSTEMNAME": "ETW-LOCAL",
+  "VOUCHERTYPE": "Stock Journal",
+  "VOUCHERTYPENAME": "Stock Journal",
+  "VOUCHERNUMBER": "BT-SAMPLE-001",
+  "VOUCHERREF": "BT-SAMPLE-001",
+  "SOURCEBRANCH": "Kampala HQ",
+  "DESTBRANCH": "Jinja",
+  "REMARKS": "Batch transfer mixed-line sample",
+  "INVENTORIES": [
+    {
+      "PRODUCTCODE": "19",
+      "QTY": "1"
+    },
+    {
+      "PRODUCTCODE": "RND-PROD-X1",
+      "QTY": "1"
+    },
+    {
+      "PRODUCTCODE": "RND-PROD-X2",
+      "QTY": "1"
+    }
+  ]
+}
+```
+
+Sample curl:
+
+```bash
+curl -X POST "http://localhost/etaxware-api/api/{adapter}/batchstocktransfer" \
+  -H "Content-Type: application/json" \
+  --data-raw '{
+    "VERSION":"5.0.0",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
+    "ERPUSER":"manager",
+    "WINDOWSUSER":"svc-etw",
+    "IPADDRESS":"127.0.0.1",
+    "MACADDRESS":"00-00-00-00-00-00",
+    "SYSTEMNAME":"ETW-LOCAL",
+    "VOUCHERTYPE":"Stock Journal",
+    "VOUCHERTYPENAME":"Stock Journal",
+    "VOUCHERNUMBER":"BT-SAMPLE-001",
+    "VOUCHERREF":"BT-SAMPLE-001",
+    "SOURCEBRANCH":"Kampala HQ",
+    "DESTBRANCH":"Jinja",
+    "REMARKS":"Batch transfer mixed-line sample",
+    "INVENTORIES":[
+      {"PRODUCTCODE":"19","QTY":"1"},
+      {"PRODUCTCODE":"RND-PROD-X1","QTY":"1"},
+      {"PRODUCTCODE":"RND-PROD-X2","QTY":"1"}
+    ]
+  }'
+```
+
+Sample response (partial/mixed):
+
+```json
+{
+  "response": {
+    "responseCode": "45",
+    "responseMessage": "Partial Error. Contact your system administrator! RND-PROD-X1: commodityGoodsId or goodsCode does not exist!; RND-PROD-X2: commodityGoodsId or goodsCode does not exist!"
+  },
+  "data": {
+    "voucherNumber": "BT-SAMPLE-001",
+    "voucherRef": "BT-SAMPLE-001",
+    "sourceBranch": "912550336846912433",
+    "destBranch": "592478656342375774",
+    "summary": {
+      "totalLines": 3,
+      "successCount": 1,
+      "failureCount": 2
+    },
+    "lineResults": [
+      {
+        "lineNo": 1,
+        "productCode": "19",
+        "qty": "1",
+        "status": "SUCCESS",
+        "code": "00",
+        "message": "The operation was successful"
+      },
+      {
+        "lineNo": 2,
+        "productCode": "RND-PROD-X1",
+        "qty": "1",
+        "status": "ERROR",
+        "code": "658",
+        "message": "commodityGoodsId or goodsCode does not exist!"
+      },
+      {
+        "lineNo": 3,
+        "productCode": "RND-PROD-X2",
+        "qty": "1",
+        "status": "ERROR",
+        "code": "658",
+        "message": "commodityGoodsId or goodsCode does not exist!"
+      }
+    ]
+  }
+}
+```
+
+### 10.18 POST /checktaxpayer
+
+Sample request:
+
+```json
+{
+  "VERSION": "5.0.0",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
+  "ERPUSER": "manager",
+  "WINDOWSUSER": "devuser",
+  "IPADDRESS": "127.0.0.1",
+  "MACADDRESS": "00-00-00-00-00-00",
+  "SYSTEMNAME": "local",
+  "TIN": "9083746521",
+  "COMMODITYCODE": "101"
+}
+```
+
+Sample curl:
+
+```bash
+curl -X POST "http://localhost/etaxware-api/api/{adapter}/checktaxpayer" \
+  -H "Content-Type: application/json" \
+  --data-raw '{
+    "VERSION":"5.0.0",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
+    "ERPUSER":"manager",
+    "WINDOWSUSER":"devuser",
+    "IPADDRESS":"127.0.0.1",
+    "MACADDRESS":"00-00-00-00-00-00",
+    "SYSTEMNAME":"local",
+    "TIN":"9083746521",
+    "COMMODITYCODE":"101"
+  }'
+```
+
+Sample response:
+
+```json
+{
+  "response": {
+    "responseCode": "00",
+    "responseMessage": "The operation to check taxpayer was successful"
+  },
+  "data": {
+    "TAXPAYERTYPE": "1",
+    "COMMODITYTAXPAYERTYPE": "2"
+  }
+}
+```
+
+### 10.19 POST /voidcreditnote
+
+Sample request:
+
+```json
+{
+  "VERSION": "5.0.0",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
+  "ERPUSER": "manager",
+  "WINDOWSUSER": "devuser",
+  "IPADDRESS": "127.0.0.1",
+  "MACADDRESS": "00-00-00-00-00-00",
+  "SYSTEMNAME": "local",
+  "VOUCHERNUMBER": "CN-001",
+  "VOUCHERREF": "ERP-CN-001",
+  "VOUCHERTYPE": "Credit Note",
+  "VOUCHERTYPENAME": "Credit Note"
+}
+```
+
+Sample curl:
+
+```bash
+curl -X POST "http://localhost/etaxware-api/api/{adapter}/voidcreditnote" \
+  -H "Content-Type: application/json" \
+  --data-raw '{
+    "VERSION":"5.0.0",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
+    "ERPUSER":"manager",
+    "WINDOWSUSER":"devuser",
+    "IPADDRESS":"127.0.0.1",
+    "MACADDRESS":"00-00-00-00-00-00",
+    "SYSTEMNAME":"local",
+    "VOUCHERNUMBER":"CN-001",
+    "VOUCHERREF":"ERP-CN-001",
+    "VOUCHERTYPE":"Credit Note",
+    "VOUCHERTYPENAME":"Credit Note"
+  }'
+```
+
+Sample response:
+
+```json
+{
+  "response": {
+    "responseCode": "00",
+    "responseMessage": "The operation was successful"
+  },
+  "data": []
+}
+```
+
+### 10.20 POST / (index)
+
+Sample request:
+
+```json
+{
+  "VERSION": "5.0.0",
+  "APIKEY": "X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+  "ORGTIN": "9083746521",
+  "ERPUSER": "manager",
+  "WINDOWSUSER": "devuser",
+  "IPADDRESS": "127.0.0.1",
+  "MACADDRESS": "00-00-00-00-00-00",
+  "SYSTEMNAME": "local"
+}
+```
+
+Sample curl:
+
+```bash
+curl -X POST "http://localhost/etaxware-api/api/{adapter}/" \
+  -H "Content-Type: application/json" \
+  --data-raw '{
+    "VERSION":"5.0.0",
+    "APIKEY":"X7mQ2pL9vT4kN8rJc1D5sH0yBzE6uW3aFqR8nM2",
+    "ORGTIN":"9083746521",
+    "ERPUSER":"manager",
+    "WINDOWSUSER":"devuser",
+    "IPADDRESS":"127.0.0.1",
+    "MACADDRESS":"00-00-00-00-00-00",
+    "SYSTEMNAME":"local"
+  }'
+```
+
+Sample response:
+
+```json
+{
+  "response": {
+    "responseCode": "00",
+    "responseMessage": "It Works!"
+  },
+  "data": []
 }
 ```
 

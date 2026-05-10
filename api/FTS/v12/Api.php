@@ -1841,7 +1841,7 @@ Class Api{
                                 $this->code = $elem['returnCode'];
                             }
                         } else {
-                            $this->message = "The operation was successfully";
+                            $this->message = "The operation was successful";
                             $this->code = '00';
                             $this->util->logstockadjustment($this->userid_u, strtoupper($productcode), $batchno, $qty, $suppliertin, $suppliername, $stockintype, $productiondate, $unitprice, trim($this->appsettings['STOCKINOPERATIONTYPE']), NULL, NULL, NULL, NULL, NULL, NULL);
                         }
@@ -2170,7 +2170,7 @@ Class Api{
                             $this->code = $elem['returnCode'];
                         }
                     } else {
-                        $this->message = "The operation was successfully";
+                        $this->message = "The operation was successful";
                         $this->code = '00';
                         $this->util->logstockadjustment($this->userid_u, strtoupper($productcode), $batchno, $qty, NULL, NULL, NULL, NULL, NULL, trim($this->appsettings['STOCKOUTOPERATIONTYPE']), NULL, NULL, NULL, NULL, $adjustmenttype, $remarks);
                     }
@@ -2303,7 +2303,7 @@ Class Api{
                                 $this->code = $this->code . $elem['returnCode'] . '; ';
                             }
                         } else {
-                            $this->message = "The operation was successfully";
+                            $this->message = "The operation was successful";
                             $this->code = '00';
                             
                             
@@ -3367,7 +3367,7 @@ Class Api{
                             $this->code = $elem['returnCode'];
                         }
                     } else {
-                        $this->message = "The operation was successfully";
+                        $this->message = "The operation was successful";
                         $this->code = '00';
                         $this->util->logstocktransfer($this->userid_u, $resolvedProductCode, $qty, NULL, NULL, NULL, NULL, $remarks, $sourcebranch, $destbranch, '101', $pdct['uraproductidentifier']);
                     }

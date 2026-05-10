@@ -640,7 +640,7 @@ Class Api{
                             $this->code = $elem['returnCode'];
                         }
                     } else {
-                        $this->message = "The operation was successfully";
+                        $this->message = "The operation was successful";
                         $this->code = '00';
                         $this->util->logstockadjustment($this->userid_u, $productcode, $batchno, $qty, $suppliertin, $suppliername, $stockintype, $productiondate, $unitprice, trim($this->appsettings['STOCKINOPERATIONTYPE']), NULL, NULL, NULL, NULL, NULL, NULL);
                     }
@@ -778,7 +778,7 @@ Class Api{
                                 $this->code = $elem['returnCode'];
                             }
                         } else {
-                            $this->message = "The operation was successfully";
+                            $this->message = "The operation was successful";
                             $this->code = '00';
                             $this->util->logstockadjustment($this->userid_u, NULL, $batchno, NULL, $suppliertin, $suppliername, $stockintype, $productiondate, NULL, trim($this->appsettings['STOCKINOPERATIONTYPE']), $vchtype, $vchtypename, $vchnumber, $vchref, NULL, NULL);
                         }
@@ -886,7 +886,7 @@ Class Api{
                             $this->code = $elem['returnCode'];
                         }
                     } else {
-                        $this->message = "The operation was successfully";
+                        $this->message = "The operation was successful";
                         $this->code = '00';
                         $this->util->logstockadjustment($this->userid_u, $productcode, $batchno, $qty, NULL, NULL, NULL, NULL, NULL, trim($this->appsettings['STOCKOUTOPERATIONTYPE']), NULL, NULL, NULL, NULL, $adjustmenttype, $remarks);
                     }

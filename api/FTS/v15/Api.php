@@ -4,13 +4,19 @@ use \PHPMailer\PHPMailer\SMTP;
 
 /**
  * @name Api.php
- * @desc This file is part of the etaxware-api app. This is the API version 3
- * @date: 09-01-2026
+ * @desc This file is part of the etaxware-api app. This is the API version 15
+ * @date: 07-05-2026
  * @file: Api.php
- * @path: ./api/Fts/v3/Api.php
+ * @path: ./api/FTS/v15/Api.php
  * @author: francis lubanga <francis.lubanga@gmail.com>
  * @copyright  (C) FTS Group Consulting Limited - All Rights Reserved
- * @version    3.0.0
+ * @version    15.0.0
+ */
+
+/*
+ * v15 baseline note (2026-05-07):
+ * This version is branched from v14 as the active baseline for transfer and
+ * batch stock operation enhancements with line-level error reporting.
  */
 
 Class Api{
@@ -58,6 +64,207 @@ Class Api{
     protected $emailport;
     
     protected $vatRegistered; //Flag to indicate if the tax payer is registered for VAT or not.
+    protected $auditLogged = FALSE;
+    protected $currentEndpoint = NULL;
+
+    /**
+     * Resolve the logical endpoint name from the incoming request URI.
+     *
+     * @return string
+     */
+    private function resolveEndpointName(){
+        $uri = '';
+
+        if ($this->f3) {
+            $uri = (string)$this->f3->get('SERVER.REQUEST_URI');
+        } elseif (isset($_SERVER['REQUEST_URI'])) {
+            $uri = (string)$_SERVER['REQUEST_URI'];
+        }
+
+        $path = trim((string)parse_url($uri, PHP_URL_PATH));
+        $endpoint = strtolower(trim((string)basename($path)));
+
+        if ($endpoint === '' || $endpoint === 'index.php') {
+            return 'index';
+        }
+
+        return $endpoint;
+    }
+
+    /**
+     * Create an ERP audit log entry without interrupting API flow on logging failures.
+     *
+     * @param mixed ...$args
+     * @return void
+     */
+    private function createerpauditlogSafe(...$args){
+        try {
+            if (!$this->util) {
+                return;
+            }
+
+            call_user_func_array(array($this->util, 'createerpauditlog'), $args);
+            $this->auditLogged = TRUE;
+        } catch (Exception $e) {
+            if ($this->logger) {
+                $this->logger->write('Api : createerpauditlogSafe() : The operation to create an ERP audit log was not successful. The error message is ' . $e->getMessage(), 'r');
+            }
+        }
+    }
+
+    /**
+     * Determine whether the supplied payload is well-formed XML.
+     *
+     * @param string $payload
+     * @return bool
+     */
+    private function looksLikeXmlPayload($payload){
+        $body = trim((string)$payload);
+
+        if ($body === '' || strpos($body, '<') !== 0) {
+            return FALSE;
+        }
+
+        libxml_use_internal_errors(TRUE);
+        $xml = simplexml_load_string($body);
+        libxml_clear_errors();
+
+        return ($xml !== FALSE);
+    }
+
+    /**
+     * Determine whether the supplied payload is valid JSON.
+     *
+     * @param string $payload
+     * @return bool
+     */
+    private function looksLikeJsonPayload($payload){
+        $body = trim((string)$payload);
+
+        if ($body === '') {
+            return FALSE;
+        }
+
+        $firstChar = substr($body, 0, 1);
+
+        if ($firstChar !== '{' && $firstChar !== '[') {
+            return FALSE;
+        }
+
+        json_decode($body, TRUE);
+
+        return (json_last_error() === JSON_ERROR_NONE);
+    }
+
+    /**
+     * Emit a graceful pre-route error response in JSON or XML format.
+     *
+     * @param string $code
+     * @param string $message
+     * @param string $format
+     * @return void
+     */
+    private function emitGracefulPreRouteError($code, $message, $format='json'){
+        $format = strtolower(trim((string)$format));
+        $code = trim((string)$code);
+        $message = trim((string)$message);
+
+        $endpoint = trim((string)$this->currentEndpoint);
+        $requestUri = '';
+
+        if ($this->f3) {
+            $requestUri = (string)$this->f3->get('SERVER.REQUEST_URI');
+        } elseif (isset($_SERVER['REQUEST_URI'])) {
+            $requestUri = (string)$_SERVER['REQUEST_URI'];
+        }
+
+        if ($this->logger) {
+            $this->logger->write(
+                'Api : beforeroute() : Graceful fail-fast response emitted. endpoint=' .
+                $endpoint . ', uri=' . $requestUri . ', format=' . $format .
+                ', code=' . $code . ', message=' . $message,
+                'r'
+            );
+        }
+
+        if ($format === 'xml') {
+            $response  = '<ENVELOPE>';
+            // Maintainer note (2026-05-07 00:00 UTC): align XML envelope status
+            // with Tally adapter success-path structure so RETURNMESSAGE is surfaced.
+            $response .= '<HEADER><VERSION>1</VERSION><STATUS>1</STATUS></HEADER>';
+            $response .= '<BODY><DATA><RESPONSE>';
+            $response .= '<RETURNCODE>' . htmlspecialchars($code) . '</RETURNCODE>';
+            $response .= '<RETURNMESSAGE>' . htmlspecialchars($message) . '</RETURNMESSAGE>';
+            $response .= '</RESPONSE></DATA></BODY>';
+            $response .= '</ENVELOPE>';
+
+            if (!headers_sent()) {
+                header('Content-Type: application/xml; charset=UTF-8');
+                header('CONTENT-LENGTH:' . strlen($response));
+            }
+
+            print $response;
+            die();
+        }
+
+        $response = array(
+            'response' => array(
+                'responseCode' => $code,
+                'responseMessage' => $message
+            ),
+            'data' => array()
+        );
+
+        if (!headers_sent()) {
+            header('Content-Type: application/json; charset=UTF-8');
+            header('CONTENT-LENGTH:' . strlen(json_encode($response)));
+        }
+
+        die(json_encode($response));
+    }
+
+    /**
+     * Ensure an endpoint-level ERP audit log exists before shutdown.
+     *
+     * @return void
+     */
+    public function ensureEndpointAuditLog(){
+        if ($this->auditLogged) {
+            return;
+        }
+
+        $endpoint = trim((string)$this->currentEndpoint);
+
+        if ($endpoint === '') {
+            $endpoint = $this->resolveEndpointName();
+        }
+
+        if (in_array($endpoint, array('beforeroute', 'afterroute', '__construct'), TRUE)) {
+            return;
+        }
+
+        $json = json_decode((string)$this->json, TRUE);
+
+        if (!is_array($json)) {
+            $json = array();
+        }
+
+        $windowsuser = empty($json['WINDOWSUSER']) ? '' : trim((string)$json['WINDOWSUSER']);
+        $ipaddress = empty($json['IPADDRESS']) ? '' : trim((string)$json['IPADDRESS']);
+        $macaddress = empty($json['MACADDRESS']) ? '' : trim((string)$json['MACADDRESS']);
+        $systemname = empty($json['SYSTEMNAME']) ? '' : trim((string)$json['SYSTEMNAME']);
+        $vchnumber = empty($json['VOUCHERNUMBER']) ? '' : trim((string)$json['VOUCHERNUMBER']);
+        $vchref = empty($json['VOUCHERREF']) ? '' : trim((string)$json['VOUCHERREF']);
+
+        $userid = empty($this->userid_u) ? $this->userid : $this->userid_u;
+        $activity = strtoupper($endpoint) . ': ' . (empty($this->message) ? 'Request completed' : trim((string)$this->message));
+
+        if ($vchnumber !== '' || $vchref !== '') {
+            $activity = $activity . ': ' . $vchnumber . ': ' . $vchref;
+        }
+
+        $this->createerpauditlogSafe($userid, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+    }
 
     /**
      *	@name sendmail
@@ -356,7 +563,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         // prepare json response
@@ -381,7 +588,928 @@ Class Api{
         //print $this->response;
         die(json_encode($this->response));
         return;
+    }
         
+
+
+	/**
+     *	@name uploaddebitnote
+     *  @desc upload debitnote
+     *	@return string response
+     *	@param NULL
+     **/
+    function uploaddebitnote(){
+        // Maintainer note: this handler is intentionally kept in v11 to preserve
+        // route parity and ensure /uploaddebitnote works in the active FTS adapter.
+        $operation = NULL; //tblevents
+        $permission = 'UPLOADDEBITNOTE'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+        
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+            
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            $debitnoteid = '';
+            $debitnotenumber = '';
+            $issueddate = '';
+            $fdn = '';
+            $qr = '';
+            
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+            
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+            
+            $tcsdetails = new tcsdetails($this->db);
+            $tcsdetails->getByID($this->appsettings['EFRIS_TCS_RECORD_ID']);
+            
+            $companydetails = new organisations($this->db);
+            $companydetails->getByID($this->appsettings['SELLER_RECORD_ID']);
+            
+            $devicedetails = new devices($this->db);
+            $devicedetails->getByID($this->appsettings['EFRIS_DEVICE_RECORD_ID']);
+            
+            $vchtype = trim($json['VOUCHERTYPE']);
+            $vchtypename = trim($json['VOUCHERTYPENAME']);
+            $vchnumber = trim($json['VOUCHERNUMBER']);
+            $vchref = trim($json['VOUCHERREF']);
+            $orivchnumber = trim($json['ORIVOUCHERNUMBER']);/*holds the original invoice #*/
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            
+            $this->logger->write("Api : uploaddebitnote() : The userid is: " . $this->userid_u, 'r');
+            $this->logger->write("Api : uploaddebitnote() : Checking permissions", 'r');
+            if ($this->userpermissions[$permission]) {
+                $branch = new branches($this->db);
+                $branch->getByID($this->userbranch_u);
+                
+                $inv_check = new DB\SQL\Mapper($this->db, 'tbldebitnotes');
+                $inv_check->load(array('TRIM(erpdebitnoteid)=?', $vchnumber));
+                $this->logger->write($this->db->log(TRUE), 'r');
+                
+                if($inv_check->dry ()){
+                    $this->logger->write("Api : uploaddebitnote() : The debitnote does not exist on eTW. Proceed and upload", 'r');
+                    
+                    if(trim($orivchnumber) !== '' || ! empty(trim($orivchnumber))) {
+                        $this->logger->write("Api : uploaddebitnote() : The associated original invoice was supplied", 'r');
+                        
+                        $orig_inv = new DB\SQL\Mapper($this->db, 'tblinvoices');
+                        $orig_inv->load(array('TRIM(erpinvoiceid)=?', $orivchnumber));
+                        $this->logger->write($this->db->log(TRUE), 'r');
+                        
+                        if ($orig_inv->dry()) {
+                            $this->logger->write("Api : uploaddebitnote() : There is no associated original invoice in the database", 'r');
+                            $oriinvoiceid = NULL;
+                            $oriinvoiceno = NULL;
+                        } else {
+                            $oriinvoiceid = $orig_inv->einvoiceid;
+                            $oriinvoiceno = $orig_inv->einvoicenumber;
+                            
+                            if(trim($oriinvoiceid) == '' || empty(trim($oriinvoiceid))) {
+                                $this->logger->write("Api : uploaddebitnote() : The oriinvoiceid is empty", 'r');
+                                
+                                if(trim($oriinvoiceno) == '' || empty(trim($oriinvoiceno))) {
+                                    $this->logger->write("Api : uploaddebitnote() : The oriinvoiceno is empty", 'r');
+                                } else {
+                                    $this->logger->write("Api : uploaddebitnote() : The oriinvoiceno is NOT empty", 'r');
+                                    $i_data = $this->util->downloadinvoice($this->userid, $oriinvoiceno);
+                                    $i_data = json_decode($i_data, true);
+                                    
+                                    if (isset($i_data['basicInformation'])){
+                                        $TempInvoiceId = $i_data['basicInformation']['invoiceId'];
+                                        $TempInvoiceNo = $i_data['basicInformation']['invoiceNo'];
+                                        
+                                        if (trim($TempInvoiceNo) == trim($oriinvoiceno)) {
+                                            $oriinvoiceid = $TempInvoiceId;
+                                        }
+                                    }
+                                    
+                                    try{
+                                        $this->db->exec(array('UPDATE tblinvoices SET einvoiceid = "' . $oriinvoiceid . '", modifieddt = NOW(), modifiedby = ' . $this->userid . ' WHERE einvoicenumber = "' . $oriinvoiceno . '"'));
+                                        $this->logger->write($this->db->log(TRUE), 'r');
+                                    } catch (Exception $e) {
+                                        $this->logger->write("Api : uploaddebitnote() : Failed to update the table tblinvoices. The error message is " . $e->getMessage(), 'r');
+                                    }
+                                }
+                            } else {
+                                $this->logger->write("Api : uploaddebitnote() : The oriinvoiceid is not empty", 'r');
+                            }
+                        }
+                    } else {
+                        $this->logger->write("Api : uploaddebitnote() : The associated original invoice was not supplied", 'r');
+                        $oriinvoiceid = NULL;
+                        $oriinvoiceno = NULL;
+
+                        // Maintainer note (2026-04-14): v10-b backfill.
+                        // Debit note upload must reference an original invoice.
+                        $this->message = "The associated original invoice number was not supplied!";
+                        $this->code = '-999';
+
+                        $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a debitnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                        $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+
+                        $this->response = array(
+                            "response" => array(
+                                "responseCode" => $this->code,
+                                "responseMessage" => $this->message
+                            ),
+                            "data" => array(
+                                "INVID" => "",
+                                "INVNO" => "",
+                                "ISSUEDT" => "",
+                                "FDN" => "",
+                                "QRCODE" => "",
+                                "REFERENCE" => ""
+                            )
+                        );
+
+                        $len = sizeof($this->response);
+                        header ("CONTENT-LENGTH:".$len);
+                        die(json_encode($this->response));
+                        return;
+                    }
+                    
+                    $reasoncode = NULL;
+                    $reason = NULL;
+
+                    if (isset($json['REASONS'])) {
+                        foreach ($json['REASONS'] as $obj){
+                            $reasoncode = trim($obj['REASONCODE']);
+                            $reason = trim($obj['REASON']);
+                        }
+                    } else {
+                        // Maintainer note (2026-04-14): v10-b backfill.
+                        // Reason details are mandatory for debit-note uploads.
+                        $this->logger->write("Api : uploaddebitnote() : No reason was supplied!", 'r');
+                        $this->message = "No reason was supplied!";
+                        $this->code = '-999';
+
+                        $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a debitnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                        $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+
+                        $this->response = array(
+                            "response" => array(
+                                "responseCode" => $this->code,
+                                "responseMessage" => $this->message
+                            ),
+                            "data" => array(
+                                "INVID" => "",
+                                "INVNO" => "",
+                                "ISSUEDT" => "",
+                                "FDN" => "",
+                                "QRCODE" => "",
+                                "REFERENCE" => ""
+                            )
+                        );
+
+                        $len = sizeof($this->response);
+                        header ("CONTENT-LENGTH:".$len);
+                        die(json_encode($this->response));
+                        return;
+                    }
+                    
+                    $debitnotedetails = array(
+                        'gooddetailgroupid' => NULL,
+                        'taxdetailgroupid' => NULL,
+                        'paymentdetailgroupid' => NULL,
+                        'erpdebitnoteid' => trim($json['VOUCHERNUMBER']),
+                        'erpdebitnoteno' => NULL,
+                        'erpinvoiceid' => trim($json['VOUCHERREF']),
+                        'erpinvoiceno' => NULL,
+                        'antifakecode' => NULL,
+                        'deviceno' => trim($devicedetails->deviceno),
+                        'issueddate' => date('Y-m-d'),
+                        'issuedtime' => date('Y-m-d H:i:s'),
+                        'operator' => trim($json['ERPUSER']),
+                        'currency' => $this->util->getcurrency(trim($json['CURRENCY'])),
+                        'oriinvoiceid' => $oriinvoiceid,
+                        'oriinvoiceno' => $oriinvoiceno,
+                        'invoicetype' => "4",
+                        'invoicekind' => ($this->vatRegistered == 'Y')? "1" : "2",
+                        'datasource' => $this->appsettings['WESERVICEDS'],
+                        'invoiceindustrycode' => trim($json['INDUSTRYCODE'])? trim($json['INDUSTRYCODE']) : "101",
+                        'einvoiceid' => NULL,
+                        'einvoicenumber' => NULL,
+                        'einvoicedatamatrixcode' => NULL,
+                        'isbatch' => '0',
+                        'netamount' => NULL,
+                        'taxamount' => NULL,
+                        'grossamount' => NULL,
+                        'origrossamount' => NULL,
+                        'itemcount' => NULL,
+                        'modecode' => '1',/*default-online*/
+                        'modename' => NULL,
+                        'remarks' => NULL,
+                        'buyerid' => NULL,
+                        'sellerid' => $this->appsettings['SELLER_RECORD_ID'],
+                        'issueddatepdf' => date('Y-m-d H:i:s'),
+                        'grossamountword' => NULL,
+                        'isinvalid' => 0,
+                        'isrefund' => 0,
+                        'vchtype' => trim($json['VOUCHERTYPE']),
+                        'vchtypename' => trim($json['VOUCHERTYPENAME']),
+                        'reasoncode' => $reasoncode,
+                        'reason' => $reason,
+                        'referenceno' => NULL,
+                        'approvestatus' => NULL,
+                        'debitnoteapplicationid' => NULL,
+                        'refundinvoiceno' => NULL,
+                        'applicationtime' => date('Y-m-d H:i:s'),
+                        'invoiceapplycategorycode' => '101', /*101-Credit Note*/
+                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                        'vatProjectId' => trim($json['PROJECTID']),
+                        'vatProjectName' => trim($json['PROJECTNAME']),
+                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE']))
+                    );
+                    
+                    $buyer = array(
+                        'tin' => trim($json['BUYERTIN']),
+                        'ninbrn' => trim($json['BUYERNINBRN']),
+                        'PassportNum' => trim($json['BUYERPASSPORTNUM']),
+                        'legalname' => trim($json['BUYERLEGALNAME']),
+                        'businessname' => trim($json['BUSINESSNAME']),
+                        'address' => trim($json['BUYERADDRESS']),
+                        'mobilephone' => trim($json['MOBILEPHONE']),
+                        'linephone' => trim($json['BUYERLINEPHONE']),
+                        'emailaddress' => trim($json['BUYEREMAIL']),
+                        'placeofbusiness' => trim($json['BUYERPLACEOFBUSI']),
+                        'type' => $this->util->mapbuyertypecode(trim($json['BUYERTYPE'])),
+                        'citizineship' => trim($json['BUYERCITIZENSHIP']),
+                        'sector' => trim($json['BUYERSECTOR']),
+                        'referenceno' => trim($json['BUYERREFERENCENO']),
+                        'datasource' => $this->appsettings['WESERVICEDS'],
+                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                        'vatProjectId' => trim($json['PROJECTID']),
+                        'vatProjectName' => trim($json['PROJECTNAME']),
+                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE']))
+                    );
+                    
+                    if (trim($json['BUYERTIN']) == '' || empty($json['BUYERTIN'])) {
+                        $this->logger->write("Api : uploaddebitnote() : The buyer TIN was not provided!", 'r');
+                    } else {
+                        $v_data = $this->util->querytaxpayer($this->userid_u, trim($json['BUYERTIN']));
+                        $v_data = json_decode($v_data, true);
+                        
+                        if (isset($v_data['taxpayer'])){
+                            $this->logger->write("Api : uploaddebitnote() : The buyer TIN was validated successfully!", 'r');
+                            
+                            $buyer['ninbrn'] = $v_data['taxpayer']['ninBrn'];
+                            $buyer['legalname'] = $v_data['taxpayer']['legalName'];
+                            $buyer['businessname'] = $v_data['taxpayer']['businessName'];
+                            $buyer['mobilephone'] = $v_data['taxpayer']['contactNumber'];
+                            $buyer['emailaddress'] = $v_data['taxpayer']['contactEmail'];
+                            $buyer['address'] = $v_data['taxpayer']['address'];
+                        }
+                    }
+                    
+                    $goods = array();
+                    $taxes = array();
+                    $payments = array();
+                    
+                    $deemedflag = 'NO';
+                    $discountflag = 'NO';
+                    
+                    $pricevatinclusive = empty(trim($json['PRICEVATINCLUSIVE']))? 'NO' : strtoupper(trim($json['PRICEVATINCLUSIVE']));
+                    
+                    $netamount = 0;
+                    $taxamount = 0;
+                    $grossamount = 0;
+                    $itemcount = 0;
+                    
+                    $tr = new taxrates($this->db);
+                    $taxid = NULL;
+                    $taxcode = NULL;
+                    $taxname = NULL;
+                    $taxcategory = NULL;
+                    $taxdisplaycategory = NULL;
+                    $taxdescription = NULL;
+                    $rate = 0;
+                    $qty = 0;
+                    $unit = 0;
+                    $discountpct = 0;
+                    $total = 0;
+                    $discount = 0;
+                    $gross = 0;
+                    $discount = 0;
+                    $tax = 0;
+                    $net = 0;
+                    $amount = 0;
+                    $erpTaxRate = 0;
+                    $product = new products($this->db);
+                    $measureunit = new measureunits($this->db);
+
+                    /**
+                     * Author: francis.lubanga@gmail.com
+                     * Date: 2024-05-20
+                     * Description: Handle fees/taxes which have no rates, and are passed as invoice line items
+                     */
+                    $mapped_fees = array();
+
+                    /**
+                     * Maintainer note (2026-04-24): propagated from v10-b.
+                     * Keep debit-note excise duty computation parity with historical adapter behavior.
+                     */
+                    $exciseduty_details = array();
+
+                    if(trim($this->appsettings['CHECK_FEE_MAP_FLAG']) == '1'){
+                        $this->logger->write("Api : uploaddebitnote() : The check fees mapping is on", 'r');
+
+                        $feesmapping = new feesmapping($this->db);
+                        $feesmappings = $feesmapping->all();
+
+                        foreach ($feesmappings as $f_obj) {
+                            $this->logger->write("Api : uploaddebitnote() : The fee code is " . $f_obj['feecode'], 'r');
+                            $this->logger->write("Api : uploaddebitnote() : The product code is " . $f_obj['productcode'], 'r');
+
+                            $mapped_fees[] = array(
+                                'id' => empty($f_obj['id'])? '' : $f_obj['id'],
+                                'feecode' => empty($f_obj['feecode'])? '' : $f_obj['feecode'],
+                                'productcode' => empty($f_obj['productcode'])? '' : strtoupper($f_obj['productcode']),
+                                'amount' => 0
+                            );
+                        }
+                    }
+                    
+                    if (isset($json['INVENTORIES'])) {
+                        $gIndex = 0;
+                        
+                        foreach ($json['INVENTORIES'] as $obj){
+                            $this->logger->write("Api : uploaddebitnote() : The PRODUCTCODE is " . $obj['PRODUCTCODE'], 'r');
+
+                            $ii = 0;
+                            $product_skip_flag = 0;
+
+                            foreach ($mapped_fees as $m_obj) {
+                                if(strtoupper(trim($m_obj['productcode'])) == strtoupper(trim($obj['PRODUCTCODE']))){
+                                    $this->logger->write("Api : uploaddebitnote() : The product " . $obj['PRODUCTCODE'] . " is mapped to a tax/fee " . $m_obj['feecode'], 'r');
+
+                                    $f_qty = $this->util->removecommasfromamount(trim($obj['QTY']));
+                                    $f_unit = $this->util->removecommasfromamount(trim($obj['RATE']));
+                                    $this->logger->write("Api : uploaddebitnote() : The previous amount on this product is " . $m_obj['amount'], 'r');
+                                    $mapped_fees[$ii]['amount'] = $m_obj['amount'] + ($f_qty * $f_unit);
+                                    $product_skip_flag = 1;
+                                    break;
+                                }
+
+                                $ii = $ii + 1;
+                            }
+
+                            if ($product_skip_flag == 1){
+                                continue;
+                            }
+                            
+                            $product->getByErpCode(trim($obj['PRODUCTCODE']));
+                            $measureunit->getByCode($product->measureunit);
+
+                            $lineExciseDetail = NULL;
+                            
+                            $qty = $this->util->removecommasfromamount(trim($obj['QTY']));
+                            $unit = $this->util->removecommasfromamount(trim($obj['RATE']));
+                            $amount = $this->util->removecommasfromamount(trim($obj['AMOUNT']));
+                            $erpTaxRate = empty(trim($obj['TAXRATE']))? 0 : $this->util->removecommasfromamount(trim($obj['TAXRATE']));
+                            $discount = empty(trim($obj['DISCOUNT']))? 0 : (float)$this->util->removecommasfromamount(trim($obj['DISCOUNT']));
+                            $discountpct = empty(trim($obj['DISCOUNTPCT']))? 0 : (float)$this->util->removecommasfromamount(trim($obj['DISCOUNTPCT']));
+
+                            // Respect explicit inventory discount flags from ERP payload when provided.
+                            $lineDiscountFlag = '';
+                            if (isset($obj['DISCOUNTFLAG'])) {
+                                $lineDiscountFlag = strtoupper(trim((string)$obj['DISCOUNTFLAG']));
+                            } elseif (isset($obj['discountflag'])) {
+                                $lineDiscountFlag = strtoupper(trim((string)$obj['discountflag']));
+                            }
+
+                            if (in_array($lineDiscountFlag, array('1', 'YES', 'Y', 'TRUE'), true)) {
+                                $lineDiscountFlag = '1';
+                            } elseif (in_array($lineDiscountFlag, array('2', '0', 'NO', 'N', 'FALSE'), true)) {
+                                $lineDiscountFlag = '2';
+                            } else {
+                                $lineDiscountFlag = '';
+                            }
+
+                            // Maintainer note (2026-04-14): enforce explicit discount semantics.
+                            // When a line carries discount amount/percentage, ERP must send DISCOUNTFLAG too.
+                            // Maintainer note (2026-04-17): DISCOUNTPCT is a decimal fraction (0.25 = 25%).
+                            // For DISCOUNTFLAG=1, both DISCOUNT and DISCOUNTPCT must be non-empty and > 0.
+                            $discountRaw = isset($obj['DISCOUNT']) ? trim((string)$obj['DISCOUNT']) : '';
+                            $discountPctRaw = isset($obj['DISCOUNTPCT']) ? trim((string)$obj['DISCOUNTPCT']) : '';
+                            $discountAmountValue = ($discountRaw !== '') ? (float)$this->util->removecommasfromamount($discountRaw) : 0;
+                            $discountPctValue = ($discountPctRaw !== '') ? (float)$this->util->removecommasfromamount($discountPctRaw) : 0;
+                            $hasLineDiscount = ($discountAmountValue > 0 || $discountPctValue > 0);
+
+                            if ($discountPctRaw !== '' && $discountPctValue > 1) {
+                                $this->logger->write("Api : uploaddebitnote() : DISCOUNTPCT must be a decimal fraction for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has invalid DISCOUNTPCT. Send a decimal fraction (e.g. 0.25 for 25%).";
+                                $this->code = '-999';
+                                break;
+                            }
+
+                            // Maintainer note (2026-04-14): fail fast to avoid implicit flag inference.
+                            if ($hasLineDiscount && $lineDiscountFlag == '') {
+                                $this->logger->write("Api : uploaddebitnote() : DISCOUNTFLAG is required when DISCOUNT or DISCOUNTPCT is populated for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has DISCOUNT/DISCOUNTPCT but no valid DISCOUNTFLAG. Expected 1 or 2.";
+                                $this->code = '-999';
+                                break;
+                            }
+
+                            if ($lineDiscountFlag == '1' && ($discountAmountValue <= 0 || $discountPctValue <= 0)) {
+                                $this->logger->write("Api : uploaddebitnote() : DISCOUNT and DISCOUNTPCT are mandatory and must be > 0 when DISCOUNTFLAG=1 for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has DISCOUNTFLAG=1 but DISCOUNT and DISCOUNTPCT are missing/zero.";
+                                $this->code = '-999';
+                                break;
+                            }
+                            
+                            $taxid = $this->util->getinvoicetaxrate_v2($json['INDUSTRYCODE'], $json['BUYERTYPE'], trim($obj['PRODUCTCODE']), trim($json['BUYERTIN']), $this->appsettings['OVERRIDE_TAXRATE_FLAG'], $this->appsettings['TAXPAYER_CHECK_FLAG']);
+                            $this->logger->write("Api : uploadinvoice() : The computed TAXID is " . $taxid, 'r');
+                            $tr->getByID($taxid);
+
+                            if (trim($product->commoditycategorycode) == '96010102') {
+                                $this->logger->write("Api : uploaddebitnote() : The product code is 96010102. Hard coding the tax id to 13", 'r');
+                                $taxid = '13';
+                                $tr->getByID($taxid);
+                            }
+
+                            $buyerPlaceOfBusi = isset($json['BUYERPLACEOFBUSI']) ? trim($json['BUYERPLACEOFBUSI']) : '';
+
+                            if (stripos(strtolower($buyerPlaceOfBusi), 'uganda') !== false) {
+                                $this->logger->write("Api : uploaddebitnote() : This is a local invoice", 'r');
+
+                                if (strlen(trim($product->exciseDutyCode)) != 0 && trim($product->exciseDutyCode) != 'NULL' && trim($product->hasexcisetax) == '101') {
+                                    $this->logger->write("Api : uploaddebitnote() : The product has excise duty", 'r');
+                                    $exciseduty_details = $this->util->computeExciseDuty($this->userid_u, $product->code, $qty, $unit, $amount, $discount, $discountpct);
+                                    if (is_array($exciseduty_details) && isset($exciseduty_details[0])) {
+                                        $lineExciseDetail = isset($exciseduty_details[0][0]) ? $exciseduty_details[0][0] : $exciseduty_details[0];
+                                    }
+
+                                    if (is_array($lineExciseDetail) && $qty > 0 && isset($lineExciseDetail['exciseTax'])) {
+                                        $unit = (float)$unit + ((float)$lineExciseDetail['exciseTax'])/$qty;
+                                    }
+                                } else {
+                                    $this->logger->write("Api : uploaddebitnote() : The product has NO excise duty", 'r');
+                                }
+                            } else {
+                                $this->logger->write("Api : uploaddebitnote() : The place of business is " . $buyerPlaceOfBusi, 'r');
+
+                                if(strtoupper(trim($json['NONRESIDENTFLAG'])) == '1'){
+                                    $this->logger->write("Api : uploaddebitnote() : The buyer is Non-Resident", 'r');
+
+                                    if(trim($json['INDUSTRYCODE']) == '112' || trim($json['INDUSTRYCODE']) == '102'){
+                                        $this->logger->write("Api : uploaddebitnote() : This is an export/export service", 'r');
+                                        $taxid = '2';
+                                        $tr->getByID($taxid);
+                                    }
+                                } else {
+                                    $this->logger->write("Api : uploaddebitnote() : The buyer is a Resident", 'r');
+
+                                    if (strlen(trim($product->exciseDutyCode)) != 0 && trim($product->exciseDutyCode) != 'NULL' && trim($product->hasexcisetax) == '101') {
+                                        $this->logger->write("Api : uploaddebitnote() : The product has excise duty", 'r');
+                                        $exciseduty_details = $this->util->computeExciseDuty($this->userid_u, $product->code, $qty, $unit, $amount, $discount, $discountpct);
+                                        if (is_array($exciseduty_details) && isset($exciseduty_details[0])) {
+                                            $lineExciseDetail = isset($exciseduty_details[0][0]) ? $exciseduty_details[0][0] : $exciseduty_details[0];
+                                        }
+
+                                        if (is_array($lineExciseDetail) && $qty > 0 && isset($lineExciseDetail['exciseTax'])) {
+                                            $unit = (float)$unit + ((float)$lineExciseDetail['exciseTax'])/$qty;
+                                        }
+                                    } else {
+                                        $this->logger->write("Api : uploaddebitnote() : The product has NO excise duty", 'r');
+                                    }
+                                }
+                            }
+
+                            $taxcode = $tr->code;
+                            
+                            if ($lineDiscountFlag == '1') {
+                                $discountpct = $discountPctValue;
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
+                            } elseif ($discountpct == 0 && $discount > 0 && (float)$amount > 0) {
+                                $discountpct = $discount/$amount;
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
+                            } else {
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
+                            }
+                            
+                            if (trim($taxcode) == '' || empty($taxcode)) {
+                                $this->logger->write("Api : uploaddebitnote() : The PRODUCTCODE " . $obj['PRODUCTCODE'] . " does not have a TAXCODE", 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " does not have a TAXCODE!";
+                                $this->code = '-999';
+                                break;
+                            } else {
+                                
+                                if (trim($taxid) == '' || empty($taxid)) {
+                                    $this->logger->write("Api : uploaddebitnote() : The TAXCODE on PRODUCTCODE " . $obj['PRODUCTCODE'] . " is not defined", 'r');
+                                    $this->message = "The TAXCODE on PRODUCTCODE " . $obj['PRODUCTCODE'] . " is not defined!";
+                                    $this->code = '-999';
+                                    break;
+                                } else {
+                                    if ($taxid == $this->appsettings['DEEMEDTAXRATE']) {
+                                        $deemedflag = 'YES';
+                                    } else {
+                                        $deemedflag = 'NO';
+                                    }
+                                    
+                                    $this->logger->write("Api : uploaddebitnote() : The final TAXID is " . $taxid, 'r');
+                                    
+                                    $taxname = $tr->name;
+                                    $taxcategory = $tr->category;
+                                    $taxdisplaycategory = $tr->displayCategoryCode;
+                                    $taxdescription = $tr->description;
+                                    $rate = $tr->rate? $tr->rate : $erpTaxRate;
+                                    
+                                    if ($pricevatinclusive == 'NO') {
+                                        $this->logger->write("Api : uploaddebitnote() : The price is tax exclusive!", 'r');
+                                        
+                                        if ($rate > 0) {
+                                            $unit = $unit * ($rate + 1);
+                                        }
+                                        
+                                        $total = ($qty * $unit);
+                                        $discount = $discountpct * $total;
+                                        $gross = $total;
+                                        $discount = (-1) * $discount;
+                                        $tax = ($gross/($rate + 1)) * $rate;
+                                        $net = $gross - $tax;
+                                    } else {
+                                        $this->logger->write("Api : uploaddebitnote() : The price is tax inclusive!", 'r');
+                                        
+                                        $total = ($qty * $unit);
+                                        $discount = $discountpct * $total;
+                                        $gross = $total;
+                                        $discount = (-1) * $discount;
+                                        $tax = ($gross/($rate + 1)) * $rate;
+                                        $net = $gross - $tax;
+                                    }
+                                    
+                                    if ($this->vatRegistered == 'N') {
+                                        $tax = 0;
+                                        $taxcategory = NULL;
+                                        $taxcode = NULL;
+                                    }
+                                    
+                                    $netamount = $netamount + $net;
+                                    $taxamount = $taxamount + $tax;
+                                    
+                                    $grossamount = $grossamount + $gross;
+                                    $itemcount = $itemcount + 1;
+                                    
+                                    // Explicit flag overrides inferred flag when present.
+                                    if ($lineDiscountFlag == '1') {
+                                        $discountflag = 'YES';
+                                    } elseif ($lineDiscountFlag == '2') {
+                                        $discountflag = 'NO';
+                                    } elseif ($discount == 0) {
+                                        $discountflag = 'NO';
+                                    } else {
+                                        $discountflag = 'YES';
+                                    }
+                                    
+                                    $effectiveDiscountFlag = trim($discountflag) == 'NO'? '2' : '1';
+                                    
+                                    $ordernumber = NULL;
+                                    
+                                    try {
+                                        $o_data = array ();
+                                        $r = $this->db->exec(array('SELECT g.ordernumber "ordernumber" FROM tblgooddetails g JOIN tblinvoices i ON i.gooddetailgroupid = g.groupid AND i.einvoicenumber = "' . $oriinvoiceno . '" WHERE TRIM(g.itemcode) = "' . trim($obj['PRODUCTCODE']) . '" ORDER BY g.id ASC'));
+                                        $this->logger->write($this->db->log(TRUE), 'r');
+                                        foreach ( $r as $set ) {
+                                            $o_data [] = $set;
+                                        }
+                                        $gIndex = sizeof($o_data);
+                                        $this->logger->write("Api : uploadcreditnote() : The order number INDEX for product " . trim($obj['PRODUCTCODE']) . " is: " . $gIndex, 'r');
+                                        $ordernumber = $o_data[0]['ordernumber'];
+                                        $this->logger->write("Api : uploaddebitnote() : The order number for product " . trim($obj['PRODUCTCODE']) . " is: " . $ordernumber, 'r');
+                                    } catch (Exception $e) {
+                                        $this->logger->write("Api : uploaddebitnote() : The operation to retrieve the order number was not successful. The error messages is " . $e->getMessage(), 'r');
+                                    }
+                                    
+                                    $goods[] = array(
+                                        'groupid' => NULL,
+                                        'item' => $product->name,
+                                        'itemcode' => trim($obj['PRODUCTCODE']),
+                                        'qty' => $qty,
+                                        'unitofmeasure' => $product->measureunit,
+                                        'unitprice' => $unit,
+                                        'total' => $total,
+                                        'taxid' => $taxid,
+                                        'taxrate' => $rate,
+                                        'tax' => $tax,
+                                        'discounttotal' => $discount,
+                                        'discounttaxrate' => $rate,
+                                        'discountpercentage' => $discountpct,
+                                        'ordernumber' => empty($ordernumber)? NULL : $ordernumber,
+                                        'discountflag' => $effectiveDiscountFlag,
+                                        'deemedflag' => (strtoupper(trim($deemedflag)) == 'NO'? '2' : '1'),
+                                        'exciseflag' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseFlag']) ? $lineExciseDetail['exciseFlag'] : NULL,
+                                        'categoryid' => is_array($lineExciseDetail) && isset($lineExciseDetail['categoryId']) ? $lineExciseDetail['categoryId'] : NULL,
+                                        'categoryname' => is_array($lineExciseDetail) && isset($lineExciseDetail['categoryName']) ? $lineExciseDetail['categoryName'] : NULL,
+                                        'goodscategoryid' => $product->commoditycategorycode,
+                                        'goodscategoryname' => NULL,
+                                        'exciserate' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseRate']) ? $lineExciseDetail['exciseRate'] : NULL,
+                                        'exciserule' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseRule']) ? $lineExciseDetail['exciseRule'] : NULL,
+                                        'excisetax' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseTax']) ? $lineExciseDetail['exciseTax'] : NULL,
+                                        'pack' => is_array($lineExciseDetail) && isset($lineExciseDetail['pack']) ? $lineExciseDetail['pack'] : NULL,
+                                        'stick' => is_array($lineExciseDetail) && isset($lineExciseDetail['stick']) ? $lineExciseDetail['stick'] : NULL,
+                                        'exciseunit' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseUnit']) ? $lineExciseDetail['exciseUnit'] : NULL,
+                                        'excisecurrency' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseCurrency']) ? $lineExciseDetail['exciseCurrency'] : NULL,
+                                        'exciseratename' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseRateName']) ? $lineExciseDetail['exciseRateName'] : NULL,
+                                        'taxdisplaycategory' => $taxdisplaycategory,
+                                        'taxcategory' => $taxcategory,
+                                        'taxcategoryCode' => $taxcode,
+                                        'unitofmeasurename' => $measureunit->name,
+                                        'pieceMeasureUnit' => $product->piecemeasureunit,
+                                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                                        'vatProjectId' => trim($json['PROJECTID']),
+                                        'vatProjectName' => trim($json['PROJECTNAME']),
+                                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE'])),
+                                        'totalWeight' => empty(trim($obj['TOTALWEIGHT']))? '0' : trim($obj['TOTALWEIGHT']),
+                                        'pieceQty' => trim($json['INDUSTRYCODE']) == '102'? $qty : NULL
+                                    );
+                                    
+                                    if ($this->vatRegistered == 'Y') {
+                                        $taxes[] = array(
+                                            'discountflag' => $effectiveDiscountFlag,
+                                            'discounttotal' => $discount,
+                                            'discounttaxrate' => $rate,
+                                            'discountpercentage' => $discountpct,
+                                            'd_netamount' => NULL,
+                                            'd_taxamount' => NULL,
+                                            'd_grossamount' => NULL,
+                                            'groupid' => NULL,
+                                            'goodid' => NULL,
+                                            'taxdisplaycategory' => $taxdisplaycategory,
+                                            'taxcategory' => $taxcategory,
+                                            'taxcategoryCode' => $taxcode,
+                                            'netamount' => $net,
+                                            'taxrate' => $rate,
+                                            'taxamount' => $tax,
+                                            'grossamount' => $gross,
+                                            'exciseunit' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseUnit']) ? $lineExciseDetail['exciseUnit'] : NULL,
+                                            'excisecurrency' => is_array($lineExciseDetail) && isset($lineExciseDetail['exciseCurrency']) ? $lineExciseDetail['exciseCurrency'] : NULL,
+                                            'taxratename' => $taxname,
+                                            'taxdescription' => $taxdescription
+                                        );
+
+                                        if (is_array($lineExciseDetail)) {
+                                            $taxes[] = array(
+                                                'discountflag' => $effectiveDiscountFlag,
+                                                'discounttotal' => $discount,
+                                                'discounttaxrate' => $rate,
+                                                'discountpercentage' => $discountpct,
+                                                'd_netamount' => NULL,
+                                                'd_taxamount' => NULL,
+                                                'd_grossamount' => NULL,
+                                                'groupid' => NULL,
+                                                'goodid' => NULL,
+                                                'taxdisplaycategory' => $taxdisplaycategory,
+                                                'taxcategory' => 'E: Excise Duty',
+                                                'taxcategoryCode' => '05',
+                                                'netamount' => isset($lineExciseDetail['exciseTax']) ? ((float)$net - (float)$lineExciseDetail['exciseTax']) : $net,
+                                                'taxrate' => isset($lineExciseDetail['exciseRate']) ? $lineExciseDetail['exciseRate'] : NULL,
+                                                'taxamount' => isset($lineExciseDetail['exciseTax']) ? $lineExciseDetail['exciseTax'] : 0,
+                                                'grossamount' => $net,
+                                                'exciseunit' => isset($lineExciseDetail['exciseUnit']) ? $lineExciseDetail['exciseUnit'] : NULL,
+                                                'excisecurrency' => isset($lineExciseDetail['exciseCurrency']) ? $lineExciseDetail['exciseCurrency'] : NULL,
+                                                'taxratename' => isset($lineExciseDetail['exciseRateName']) ? $lineExciseDetail['exciseRateName'] : NULL,
+                                                'taxdescription' => 'E'
+                                            );
+                                        }
+                                    }
+                                }
+                                
+                            }
+                        }
+                        
+                        if (sizeof($goods) > 0) {
+                            foreach ($mapped_fees as $m_obj) {
+                                $this->logger->write("Api : uploaddebitnote() : Adding fees to the tax array", 'r');
+
+                                $tr = new taxrates($this->db);
+                                $tr->getByCode($m_obj['feecode']);
+                                $taxcode = $tr->code;
+                                $taxname = $tr->name;
+                                $taxcategory = $tr->category;
+                                $taxdescription = $tr->description;
+                                $taxdisplaycategory = $tr->displayCategoryCode;
+
+                                if((float)$m_obj['amount'] <> 0){
+                                    $taxes[] = array(
+                                        'discountflag' => '1',
+                                        'discounttotal' => NULL,
+                                        'discounttaxrate' => NULL,
+                                        'discountpercentage' => NULL,
+                                        'd_netamount' => NULL,
+                                        'd_taxamount' => NULL,
+                                        'd_grossamount' => NULL,
+                                        'groupid' => NULL,
+                                        'goodid' => NULL,
+                                        'taxdisplaycategory' => $taxdisplaycategory,
+                                        'taxcategory' => $taxcategory,
+                                        'taxcategoryCode' => $taxcode,
+                                        'netamount' => 0,
+                                        'taxrate' => $m_obj['amount'],
+                                        'taxamount' => $m_obj['amount'],
+                                        'grossamount' => $m_obj['amount'],
+                                        'exciseunit' => NULL,
+                                        'excisecurrency' => NULL,
+                                        'taxratename' => $taxname,
+                                        'taxdescription' => $taxdescription
+                                    );
+                                }
+                            }
+
+                            $this->logger->write("Api : uploaddebitnote() : The GOODS count: " . sizeof($goods), 'r');
+                            $this->logger->write("Api : uploaddebitnote() : The TAX count: " . sizeof($taxes), 'r');
+                            $this->logger->write("Api : uploaddebitnote() : The PAYMENTS count: " . sizeof($payments), 'r');
+                            
+                            $this->logger->write("Api : uploaddebitnote() : The sent ERP branch is: " . $json['BRANCH'], 'r');
+                            $operating_branch = $this->util->mapbranchcode(trim($json['BRANCH']));
+                            $tmp_branch = '';
+
+                            if (trim($operating_branch) == '' || empty($operating_branch)) {
+                                $this->logger->write("Api : uploaddebitnote() : The ERP did not send a branch OR sent an unmapped branch.", 'r');
+                                $tmp_branch = $branch->uraid;
+                            } else {
+                                $tmp_branch = $operating_branch;
+                            }
+
+                            $this->logger->write("Api : uploaddebitnote() : The FINAL URA branch Id is: " . $tmp_branch, 'r');
+
+                            $data = $this->util->uploaddebitnote($this->userid_u, $tmp_branch, $buyer, $debitnotedetails, $goods, $payments, $taxes);
+                            $data = json_decode($data, true);
+                            
+                            if (isset($data['returnCode'])){
+                                $this->logger->write("Api : uploaddebitnote() : The operation to upload the debitnote not successful. The error message is " . $data['returnMessage'], 'r');
+                                $this->message = $data['returnMessage'];
+                                $this->code = $data['returnCode'];
+                                
+                                $body = $this->code . ' : ' . $this->message;
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                            } else {
+                                if (isset($data['basicInformation'])){
+                                    $antifakeCode = $data['basicInformation']['antifakeCode'];
+                                    $debitnoteId = $data['basicInformation']['invoiceId'];
+                                    $debitnoteNo = $data['basicInformation']['invoiceNo'];
+                                    
+                                    $issuedDate = $data['basicInformation']['issuedDate'];
+                                    $issuedDate = str_replace('/', '-', $issuedDate);
+                                    $issuedDate = date("Y-m-d H:i:s", strtotime($issuedDate));
+                                    
+                                    $issuedTime = $data['basicInformation']['issuedDate'];
+                                    $issuedTime = str_replace('/', '-', $issuedTime);
+                                    $issuedTime = date("Y-m-d H:i:s", strtotime($issuedTime));
+                                    
+                                    $issuedDatePdf = $data['basicInformation']['issuedDatePdf'];
+                                    $issuedDatePdf = str_replace('/', '-', $issuedDatePdf);
+                                    $issuedDatePdf = date("Y-m-d H:i:s", strtotime($issuedDatePdf));
+                                    
+                                    $oriInvoiceId = $data['basicInformation']['oriInvoiceId'];
+                                    $isInvalid = $data['basicInformation']['isInvalid'];
+                                    $isRefund = $data['basicInformation']['isRefund'];
+                                    $currencyRate = $data['basicInformation']['currencyRate'];
+                                    
+                                    $debitnoteid = $debitnoteId;
+                                    $debitnotenumber = $debitnoteNo;
+                                    $issueddate = $issuedDate;
+                                    $fdn = $antifakeCode;
+                                }
+                                
+                                if (isset($data['summary'])){
+                                    $grossAmount = $data['summary']['grossAmount'];
+                                    $itemCount = $data['summary']['itemCount'];
+                                    $netAmount = $data['summary']['netAmount'];
+                                    $qrCode = $data['summary']['qrCode'];
+                                    $taxAmount = $data['summary']['taxAmount'];
+                                    $modeCode = $data['summary']['modeCode'];
+                                    
+                                    $mode = new modes($this->db);
+                                    $mode->getByCode($modeCode);
+                                    $modeName = $mode->name;
+                                    
+                                    $f = new \NumberFormatter("en", NumberFormatter::SPELLOUT);
+                                    $grossAmountWords = $f->format($grossAmount);
+                                    
+                                    $qr = $qrCode;
+                                }
+                                
+                                $debitnotedetails['einvoicedatamatrixcode'] = $qrCode;
+                                $debitnotedetails['grossamountword'] = $grossAmountWords;
+                                $debitnotedetails['modename'] = $modeName;
+                                $debitnotedetails['modecode'] = $modeCode;
+                                $debitnotedetails['taxamount'] = $taxAmount;
+                                $debitnotedetails['netamount'] = $netAmount;
+                                $debitnotedetails['itemcount'] = $itemCount;
+                                $debitnotedetails['grossamount'] = $grossAmount;
+                                $debitnotedetails['antifakecode'] = $antifakeCode;
+                                $debitnotedetails['issueddate'] = $issuedDate;
+                                $debitnotedetails['einvoicenumber'] = $debitnoteNo;
+                                $debitnotedetails['edebitnoteid'] = $debitnoteId;
+                                $debitnotedetails['isinvalid'] = $isRefund;
+                                $debitnotedetails['isrefund'] = $isInvalid;
+                                $debitnotedetails['oriinvoiceid'] = $oriInvoiceId;
+                                $debitnotedetails['issueddatepdf'] = $issuedDatePdf;
+                                $debitnotedetails['issuedtime'] = $issuedTime;
+                                $debitnotedetails['origrossamount'] = '0';
+                                $debitnotedetails['currencyRate'] = $currencyRate;
+                                
+                                $inv_status = $this->util->createdebitnote($debitnotedetails, $goods, $taxes, $buyer, $this->userid_u);
+                                
+                                if ($inv_status) {
+                                    $this->logger->write("Api : uploadproduct() : The debit note was created on eTW successfully", 'r');
+                                } else {
+                                    $this->logger->write("Api : uploadproduct() : The debit note was NOT created on eTW", 'r');
+                                }
+                                
+                                $this->message = 'The operation to upload the debit note was successful';
+                                $this->code = '000';
+                            }
+                        } else {
+                            $this->logger->write("Api : uploadcreditnote() : No goods details were supplied!", 'r');
+                            $this->message = "No goods details were supplied!";
+                            $this->code = '-999';
+                            
+                            $body = $this->code . ' : ' . $this->message;
+                            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                        }
+                        
+                    } else {
+                        $this->logger->write("Api : uploaddebitnote() : No goods details were supplied!", 'r');
+                        $this->message = "No goods details were supplied!";
+                        $this->code = '-999';
+                        
+                        $body = $this->code . ' : ' . $this->message;
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    }
+                    
+                } else {
+                    $this->message = 'The debit note has already been uploaded into EFRIS';
+                    $this->code = '99';
+                    
+                    $debitnoteid = $inv_check->einvoiceid;
+                    $debitnotenumber = $inv_check->einvoicenumber;
+                    $issueddate = $inv_check->issuedtime;
+                    $fdn = $inv_check->antifakecode;
+                    $qr = $inv_check->einvoicedatamatrixcode;
+                }
+            } else {
+                $this->logger->write("Api : uploaddebitnote() : The user is not allowed to perform this function", 'r');
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+            
+            $activity = 'UPLOADDEBITNOTE: ' . $vchnumber . ': ' . $vchref . ': ' . $this->message;
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+        }
+               
+        
+        // prepare json response
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => array(
+                "INVID" => $debitnoteid,
+                "INVNO" => $fdn,
+                "ISSUEDT" => $issueddate,
+                "FDN" => $debitnotenumber,
+                "QRCODE" => $qr
+            )
+        );
+        
+        
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        //print $this->response;
+        die(json_encode($this->response));
+        return;
     }
     
     
@@ -490,7 +1618,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
                 
         // prepare json response
@@ -593,7 +1721,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
  
@@ -695,7 +1823,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         
@@ -790,7 +1918,9 @@ Class Api{
                     }*/
                 } else {
                     $v_data = $this->util->querytaxpayer($this->userid_u, $suppliertin);//will return JSON.
-                    $v_data = json_decode($v_data, true);
+                    if (!is_array($v_data)) {
+                        $v_data = json_decode($v_data, true);
+                    }
                     
                     if (isset($v_data['taxpayer'])){
                         //$tin = $v_data['taxpayer']['tin'];
@@ -863,7 +1993,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         
@@ -909,26 +2039,49 @@ Class Api{
             }
             
             $json = json_decode($this->json, TRUE); //convert JSON into array
-            
-            
-            
             $stockintype = trim($json['STOCKINTYPE']);//101, 102, etc.
             
             $vchtype = trim($json['VOUCHERTYPE']);
             $vchtypename = trim($json['VOUCHERTYPENAME']);
             $vchnumber = trim($json['VOUCHERNUMBER']);
             $vchref = trim($json['VOUCHERREF']);
+            $inventoryLines = (isset($json['INVENTORIES']) && is_array($json['INVENTORIES'])) ? $json['INVENTORIES'] : array();
+
+            $responseData = array(
+                'voucherNumber' => $vchnumber,
+                'voucherRef' => $vchref,
+                'stockInType' => $stockintype,
+                'summary' => array(
+                    'totalLines' => sizeof($inventoryLines),
+                    'successCount' => 0,
+                    'failureCount' => 0,
+                    'skippedCount' => 0
+                ),
+                'lineResults' => array()
+            );
+
+            // 2026-04-25: v12 validation hardening - voucher number is mandatory for batch stock-in reconciliation.
+            if (trim($vchnumber) == '' || empty($vchnumber)) {
+                $this->logger->write("Api : batchstockin() : No voucher number was supplied", 'r');
+                $this->message = "No voucher number was supplied";
+                $this->code = '-999';
+
+                $body = $this->code . ' : ' . $this->message;
+                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+            }
             
             $this->logger->write("Api : batchstockin() : The stockin type is " . $stockintype, 'r');
             
             $this->logger->write("Api : batchstockin() : The userid is: " . $this->userid_u, 'r');
             $this->logger->write("Api : batchstockin() : Checking permissions", 'r');
-            if ($this->userpermissions[$permission]) {
+            if (trim($vchnumber) != '' && !empty($vchnumber) && $this->userpermissions[$permission]) {
                 $vch_check = new DB\SQL\Mapper($this->db, 'tblgoodsstockadjustment');
                 $vch_check->load(array('TRIM(voucherNumber)=? AND TRIM(voucherRef)=? AND TRIM(voucherType)=? AND TRIM(voucherTypeName)=?', $vchnumber, $vchref, $vchtype, $vchtypename));
                 $this->logger->write($this->db->log(TRUE), 'r');
                 
                 if($vch_check->dry ()){
+                    $errorCount = 0;
+
                     if (trim($stockintype) == '103') {//Manufacture
                         $productiondate = date('Y-m-d', strtotime(trim($json['PRODUCTIONDATE'])));//1-Apr-2020  => 2020-04-01  date('Y-m-d', strtotime($date))
                         $batchno = $vchnumber;//1
@@ -940,132 +2093,113 @@ Class Api{
                         $suppliername = trim($json['SUPPLIERNAME']);
                         $suppliertin = trim($json['SUPPLIERTIN']);
                         
-                        $errorCount = 0;
-                        
-                        /**
-                         * @desc Validate TIN number, if supplied.
-                         * @author francis.lubanga@gmail.com
-                         * @date 2022-06-13
-                         *
-                         */
-                        
-                        if (trim($suppliertin) == '' || empty($suppliertin)) {
-                            $this->logger->write("Api : batchstockin() : The supplier TIN was not provided!", 'r');
-                        } else {
-                            $v_data = $this->util->querytaxpayer($this->userid_u, $suppliertin);//will return JSON.
-                            $v_data = json_decode($v_data, true);
-                            
-                            if (isset($v_data['taxpayer'])){
-                                //$tin = $v_data['taxpayer']['tin'];
-                                $legalName = $v_data['taxpayer']['legalName'];
-                                
-                                $suppliername = $legalName; //Rename the supplier.
-                                
-                            } elseif (isset($v_data['returnCode'])){
-                                $errorCount = $errorCount + 1;
-                                $this->logger->write("Api : batchstockin() : The operation to validate the supplier TIN was not successful. The error message is " . $v_data['returnMessage'], 'r');
-                                $this->message = $v_data['returnMessage'];
-                                $this->code = $v_data['returnCode'];
-                                
-                                $body = $this->code . ' : ' . $this->message;
-                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
-                            } else {
-                                $errorCount = $errorCount + 1;
-                                $this->logger->write("Api : batchstockin() : The operation to validate the supplier TIN was not successful", 'r');
-                                $this->message = "The operation to validate the supplier TIN was not successful";
-                                $this->code = '99';
-                                
-                                $body = $this->code . ' : ' . $this->message;
-                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
-                            }
-                        }
-                    }
-                    
-                    if((int)$errorCount == 0){
-                        $products = array();
-                        
-                        foreach ($json['INVENTORIES'] as $obj){
-                            $this->logger->write("Api : batchstockin() : The PRODUCTCODE is: " . trim($obj['PRODUCTCODE']), 'r');
-							
-							
-							/**
-							*Date: 2025-06-20
-							*Author: Francis Lubanga<francis.lubanga@gmail.com>
-							*Description: Exclude services from the list of products to be stocked in. This is a customisation for Tugende.
-							*/
-							$product_c = new products($this->db);
-							$product_c->getByErpCode(strtoupper(trim($obj['PRODUCTCODE'])));
-							
-							if($product_c->serviceMark == '101'){
-								$this->logger->write("Api : batchstockin() : The PRODUCTCODE " . trim($obj['PRODUCTCODE']) . " is a service. Skip!", 'r');
-								continue;
-							}
-							
-                            $products[] = array(
-                                'productCode' => strtoupper(trim($obj['PRODUCTCODE'])),//8762753
-                                'quantity' => trim($obj['QTY']),//23.0
-                                'unitPrice' => trim($obj['RATE'])//25000.00
-                            );
-                            /**
-                             *Date: 2025-11-13
-                             *Author: Francis Lubanga<francis.lubanga@gmail.com>
-                             *Description: Determing the unit price from the qty and price. This is a customisation for Tugende.
-                             */
-                        }
-                        
-                        
-                        $branch = new branches($this->db);
-                        $branch->getByID($this->userbranch_u);
-                        
-                        
-                        $data = $this->util->batchstockin($this->userid_u, $branch->uraid, $products, $batchno, $suppliertin, $suppliername, $stockintype, $productiondate);//will return JSON.
-                        
-                        $data = json_decode($data, true);
-                        
-                        
-                        
-                        if(isset($data['returnCode'])){
-                            $this->logger->write("Api : batchstockin() : The operation to increase stock was not successful. The error message is " . $data['returnMessage'], 'r');
-                            $this->message = $data['returnMessage'];
-                            $this->code = $data['returnCode'];
-                            
-                            $body = $this->code . ' : ' . $this->message;
-                            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
-                        } else {
-                            $this->logger->write("Api : batchstockin() : Here 1", 'r');
-                            if ($data) {
-                                $this->logger->write("Api : batchstockin() : Here 2", 'r');
-                                $this->message = '';
-                                $this->code = '';
-                                
-                                foreach($data as $elem){
-                                    $this->logger->write("Api : batchstockin() : The return code is: " . $elem['returnCode'] . ' - ' . $elem['returnMessage'], 'r');
-                                    $this->message = $this->message . $elem['returnMessage'] . '; ';
-                                    $this->code = $this->code . $elem['returnCode'] . '; ';
+                        if((int)$errorCount == 0){
+                            $products = array();
+                            $submittedLines = array();
+                            $lineResults = array();
+                            $lineNo = 0;
+                            $successCount = 0;
+                            $failureCount = 0;
+                            $skippedCount = 0;
+                            $lineErrorMessages = array();
+
+                            foreach ($inventoryLines as $obj){
+                                $lineNo = $lineNo + 1;
+                                $productCode = empty($obj['PRODUCTCODE']) ? '' : strtoupper(trim((string)$obj['PRODUCTCODE']));
+                                $qty = empty($obj['QTY']) ? '' : trim((string)$obj['QTY']);
+                                $rate = empty($obj['RATE']) ? '' : trim((string)$obj['RATE']);
+
+                                if ($productCode === '' || $qty === '') {
+                                    $failureCount = $failureCount + 1;
+                                    $lineResults[] = array('lineNo' => $lineNo, 'productCode' => $productCode, 'qty' => $qty, 'status' => 'ERROR', 'code' => '-997', 'message' => 'Missing PRODUCTCODE and/or QTY for one inventory line');
+                                    $lineErrorMessages[] = 'Missing PRODUCTCODE and/or QTY for one inventory line';
+                                    continue;
                                 }
-                                
-                                $this->message = "Partial Error. Contact your system administrator!";
-                                $this->code = '45';
-                            } else {
-                                $this->logger->write("Api : batchstockin() : Here 3", 'r');
-                                $this->message = "The operation was successful";
-                                $this->code = '00';
-                                
-                                foreach ($json['INVENTORIES'] as $obj){
-                                    $this->util->logstockadjustment($this->userid_u, strtoupper(trim($obj['PRODUCTCODE'])), $batchno, trim($obj['QTY']), $suppliertin, $suppliername, $stockintype, $productiondate, trim($obj['RATE']), trim($this->appsettings['STOCKINOPERATIONTYPE']), $vchtype, $vchtypename, $vchnumber, $vchref, NULL, NULL);
+
+                                $product_c = new products($this->db);
+                                $product_c->getByErpCode($productCode);
+                                if($product_c->serviceMark == '101'){
+                                    $skippedCount = $skippedCount + 1;
+                                    $lineResults[] = array('lineNo' => $lineNo, 'productCode' => $productCode, 'qty' => $qty, 'status' => 'SKIPPED', 'code' => '01', 'message' => 'The product is a service. Stock-in was skipped for this line');
+                                    continue;
                                 }
-                                
+
+                                $products[] = array('productCode' => $productCode, 'quantity' => $qty, 'unitPrice' => $rate);
+                                $submittedLines[] = array('lineNo' => $lineNo, 'productCode' => $productCode, 'qty' => $qty, 'rate' => $rate);
                             }
-                            
+
+                            if (sizeof($submittedLines) == 0 && $failureCount == 0) {
+                                $this->message = 'No valid inventory lines were supplied';
+                                $this->code = '-998';
+                            } else {
+                                $branch = new branches($this->db);
+                                $branch->getByID($this->userbranch_u);
+                                $data = $this->util->batchstockin($this->userid_u, $branch->uraid, $products, $batchno, $suppliertin, $suppliername, $stockintype, $productiondate);
+                                if (!is_array($data)) {
+                                    $data = json_decode($data, true);
+                                }
+
+                                if(isset($data['returnCode'])){
+                                    foreach ($submittedLines as $lineMeta) {
+                                        $failureCount = $failureCount + 1;
+                                        $lineResults[] = array('lineNo' => $lineMeta['lineNo'], 'productCode' => $lineMeta['productCode'], 'qty' => $lineMeta['qty'], 'status' => 'ERROR', 'code' => $data['returnCode'], 'message' => $data['returnMessage']);
+                                    }
+                                    $lineErrorMessages[] = $data['returnMessage'];
+                                } else {
+                                    if ($data) {
+                                        $failedLineNos = array();
+                                        $i = 0;
+                                        foreach($data as $elem){
+                                            $lineMeta = isset($submittedLines[$i]) ? $submittedLines[$i] : array('lineNo' => $i + 1, 'productCode' => '', 'qty' => '');
+                                            $returnCode = isset($elem['returnCode']) ? $elem['returnCode'] : '99';
+                                            $returnMessage = isset($elem['returnMessage']) ? $elem['returnMessage'] : 'The operation to increase stock was not successful';
+                                            $failureCount = $failureCount + 1;
+                                            $failedLineNos[] = $lineMeta['lineNo'];
+                                            $lineResults[] = array('lineNo' => $lineMeta['lineNo'], 'productCode' => $lineMeta['productCode'], 'qty' => $lineMeta['qty'], 'status' => 'ERROR', 'code' => $returnCode, 'message' => $returnMessage);
+                                            $lineErrorMessages[] = $lineMeta['productCode'] . ': ' . $returnMessage;
+                                            $i = $i + 1;
+                                        }
+
+                                        foreach ($submittedLines as $lineMeta) {
+                                            if (!in_array($lineMeta['lineNo'], $failedLineNos, TRUE)) {
+                                                $successCount = $successCount + 1;
+                                                $lineResults[] = array('lineNo' => $lineMeta['lineNo'], 'productCode' => $lineMeta['productCode'], 'qty' => $lineMeta['qty'], 'status' => 'SUCCESS', 'code' => '00', 'message' => 'The operation was successful');
+                                                $this->util->logstockadjustment($this->userid_u, $lineMeta['productCode'], $batchno, $lineMeta['qty'], $suppliertin, $suppliername, $stockintype, $productiondate, $lineMeta['rate'], trim($this->appsettings['STOCKINOPERATIONTYPE']), $vchtype, $vchtypename, $vchnumber, $vchref, NULL, NULL);
+                                            }
+                                        }
+                                    } else {
+                                        foreach ($submittedLines as $lineMeta){
+                                            $successCount = $successCount + 1;
+                                            $lineResults[] = array('lineNo' => $lineMeta['lineNo'], 'productCode' => $lineMeta['productCode'], 'qty' => $lineMeta['qty'], 'status' => 'SUCCESS', 'code' => '00', 'message' => 'The operation was successful');
+                                            $this->util->logstockadjustment($this->userid_u, $lineMeta['productCode'], $batchno, $lineMeta['qty'], $suppliertin, $suppliername, $stockintype, $productiondate, $lineMeta['rate'], trim($this->appsettings['STOCKINOPERATIONTYPE']), $vchtype, $vchtypename, $vchnumber, $vchref, NULL, NULL);
+                                        }
+                                    }
+                                }
+
+                                if ($failureCount == 0 && $successCount > 0) {
+                                    $this->message = "The operation was successful";
+                                    $this->code = '00';
+                                } elseif ($failureCount > 0 && $successCount > 0) {
+                                    $this->message = "Partial Error. Contact your system administrator! " . implode('; ', array_slice($lineErrorMessages, 0, 3));
+                                    $this->code = '45';
+                                } else {
+                                    $this->message = sizeof($lineErrorMessages) > 0 ? $lineErrorMessages[0] : "The operation to increase stock was not successful";
+                                    $this->code = '99';
+                                }
+                            }
+
+                            $responseData['summary']['successCount'] = $successCount;
+                            $responseData['summary']['failureCount'] = $failureCount;
+                            $responseData['summary']['skippedCount'] = $skippedCount;
+                            $responseData['lineResults'] = $lineResults;
                         }
-                    }
-                    
-                    
+                            }
+                        
                 } else {
                     $this->message = 'The voucher/journal has already been uploaded into EFRIS';
                     $this->code = '99';
                 }
-            } else {
+            } else if (trim($vchnumber) != '' && !empty($vchnumber)) {
                 $this->logger->write("Api : batchstockin() : The user is not allowed to perform this function", 'r');
                 $this->message = "The user is not allowed to perform this function";
                 $this->code = '0099';
@@ -1078,7 +2212,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         
@@ -1090,7 +2224,7 @@ Class Api{
                 "responseCode" => $this->code,
                 "responseMessage" => $this->message
             ),
-            "data" => array()
+            "data" => isset($responseData) ? $responseData : array()
         );
         
         
@@ -1179,7 +2313,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         
@@ -1232,71 +2366,132 @@ Class Api{
             $vchtypename = trim($json['VOUCHERTYPENAME']);
             $vchnumber = trim($json['VOUCHERNUMBER']);
             $vchref = trim($json['VOUCHERREF']);
+            $inventoryLines = (isset($json['INVENTORIES']) && is_array($json['INVENTORIES'])) ? $json['INVENTORIES'] : array();
+
+            // 2026-04-25: v12 validation hardening - voucher number is mandatory for batch stock-out reconciliation.
+            if (trim($vchnumber) == '' || empty($vchnumber)) {
+                $this->logger->write("Api : batchstockout() : No voucher number was supplied", 'r');
+                $this->message = "No voucher number was supplied";
+                $this->code = '-999';
+
+                $body = $this->code . ' : ' . $this->message;
+                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+            }
             
             $adjustmenttype = trim($json['ADJUSTMENTTYPE'])? trim(trim($json['ADJUSTMENTTYPE'])) : '102';//102
             $remarks = trim($json['REMARKS']);
+
+            $responseData = array(
+                'voucherNumber' => $vchnumber,
+                'voucherRef' => $vchref,
+                'adjustmentType' => $adjustmenttype,
+                'summary' => array(
+                    'totalLines' => sizeof($inventoryLines),
+                    'successCount' => 0,
+                    'failureCount' => 0
+                ),
+                'lineResults' => array()
+            );
             
             $this->logger->write("Api : batchstockout() : The userid is: " . $this->userid_u, 'r');
             $this->logger->write("Api : batchstockout() : Checking permissions", 'r');
-            if ($this->userpermissions[$permission]) {
+            if (trim($vchnumber) != '' && !empty($vchnumber) && $this->userpermissions[$permission]) {
                 $vch_check = new DB\SQL\Mapper($this->db, 'tblgoodsstockadjustment');
                 $vch_check->load(array('TRIM(voucherNumber)=? AND TRIM(voucherRef)=? AND TRIM(voucherType)=? AND TRIM(voucherTypeName)=?', $vchnumber, $vchref, $vchtype, $vchtypename));
                 $this->logger->write($this->db->log(TRUE), 'r');
                 
                 if($vch_check->dry ()){
                     $products = array();
-                    
-                    foreach ($json['INVENTORIES'] as $obj){
-                        
-                        $this->logger->write("Api : batchstockout() : The PRODUCTCODE is: " . trim($obj['PRODUCTCODE']), 'r');
-                        $products[] = array(
-                            'productCode' => strtoupper(trim($obj['PRODUCTCODE'])),//8762753
-                            'quantity' => trim($obj['QTY']),//23.0
-                            'unitPrice' => trim($obj['RATE'])? trim($obj['RATE']) : '1'//25000.00
-                        );
+                    $submittedLines = array();
+                    $lineResults = array();
+                    $lineNo = 0;
+                    $successCount = 0;
+                    $failureCount = 0;
+                    $lineErrorMessages = array();
+
+                    foreach ($inventoryLines as $obj){
+                        $lineNo = $lineNo + 1;
+                        $productCode = empty($obj['PRODUCTCODE']) ? '' : strtoupper(trim((string)$obj['PRODUCTCODE']));
+                        $qty = empty($obj['QTY']) ? '' : trim((string)$obj['QTY']);
+                        $rate = empty($obj['RATE']) ? '' : trim((string)$obj['RATE']);
+
+                        if ($productCode === '' || $qty === '') {
+                            $failureCount = $failureCount + 1;
+                            $lineResults[] = array('lineNo' => $lineNo, 'productCode' => $productCode, 'qty' => $qty, 'status' => 'ERROR', 'code' => '-997', 'message' => 'Missing PRODUCTCODE and/or QTY for one inventory line');
+                            $lineErrorMessages[] = 'Missing PRODUCTCODE and/or QTY for one inventory line';
+                            continue;
+                        }
+
+                        $products[] = array('productCode' => $productCode, 'quantity' => $qty, 'unitPrice' => $rate ? $rate : '');
+                        $submittedLines[] = array('lineNo' => $lineNo, 'productCode' => $productCode, 'qty' => $qty);
                     }
-                    
-                    
-                    $branch = new branches($this->db);
-                    $branch->getByID($this->userbranch_u);
-                    
-                    
-                    $data = $this->util->batchstockout($this->userid_u, $branch->uraid, $products, $adjustmenttype, $remarks);//will return JSON.
-                    
-                    $data = json_decode($data, true);
- 
-                    if(isset($data['returnCode'])){
-                        $this->logger->write("Api : batchstockout() : The operation to decrease stock was not successful. The error message is " . $data['returnMessage'], 'r');
-                        $this->message = $data['returnMessage'];
-                        $this->code = $data['returnCode'];
-                        
-                        $body = $this->code . ' : ' . $this->message;
-                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                    if (sizeof($submittedLines) == 0 && $failureCount == 0) {
+                        $this->message = 'No valid inventory lines were supplied';
+                        $this->code = '-998';
                     } else {
-                        if ($data) {
-                            $this->message = '';
-                            $this->code = '';
-                            
-                            foreach($data as $elem){
-                                $this->message = $this->message . $elem['returnMessage'] . '; ';
-                                $this->code = $this->code . $elem['returnCode'] . '; ';
+                        $branch = new branches($this->db);
+                        $branch->getByID($this->userbranch_u);
+                        $data = $this->util->batchstockout($this->userid_u, $branch->uraid, $products, $adjustmenttype, $remarks);//will return JSON.
+                        $data = json_decode($data, true);
+
+                        if(isset($data['returnCode'])){
+                            foreach ($submittedLines as $lineMeta) {
+                                $failureCount = $failureCount + 1;
+                                $lineResults[] = array('lineNo' => $lineMeta['lineNo'], 'productCode' => $lineMeta['productCode'], 'qty' => $lineMeta['qty'], 'status' => 'ERROR', 'code' => $data['returnCode'], 'message' => $data['returnMessage']);
                             }
+                            $lineErrorMessages[] = $data['returnMessage'];
                         } else {
-                            $this->message = "The operation was successful";
-                            $this->code = '00';
-                            
-                            
-                            foreach ($json['INVENTORIES'] as $obj){
-                                $this->util->logstockadjustment($this->userid_u, strtoupper(trim($obj['PRODUCTCODE'])), NULL, NULL, NULL, NULL, NULL, NULL, NULL, trim($this->appsettings['STOCKOUTOPERATIONTYPE']), $vchtype, $vchtypename, $vchnumber, $vchref, $adjustmenttype, $remarks);
+                            if ($data) {
+                                $failedLineNos = array();
+                                $i = 0;
+                                foreach($data as $elem){
+                                    $lineMeta = isset($submittedLines[$i]) ? $submittedLines[$i] : array('lineNo' => $i + 1, 'productCode' => '', 'qty' => '');
+                                    $returnCode = isset($elem['returnCode']) ? $elem['returnCode'] : '99';
+                                    $returnMessage = isset($elem['returnMessage']) ? $elem['returnMessage'] : 'The operation to decrease stock was not successful';
+                                    $failureCount = $failureCount + 1;
+                                    $failedLineNos[] = $lineMeta['lineNo'];
+                                    $lineResults[] = array('lineNo' => $lineMeta['lineNo'], 'productCode' => $lineMeta['productCode'], 'qty' => $lineMeta['qty'], 'status' => 'ERROR', 'code' => $returnCode, 'message' => $returnMessage);
+                                    $lineErrorMessages[] = $lineMeta['productCode'] . ': ' . $returnMessage;
+                                    $i = $i + 1;
+                                }
+
+                                foreach ($submittedLines as $lineMeta) {
+                                    if (!in_array($lineMeta['lineNo'], $failedLineNos, TRUE)) {
+                                        $successCount = $successCount + 1;
+                                        $lineResults[] = array('lineNo' => $lineMeta['lineNo'], 'productCode' => $lineMeta['productCode'], 'qty' => $lineMeta['qty'], 'status' => 'SUCCESS', 'code' => '00', 'message' => 'The operation was successful');
+                                        $this->util->logstockadjustment($this->userid_u, $lineMeta['productCode'], NULL, NULL, NULL, NULL, NULL, NULL, NULL, trim($this->appsettings['STOCKOUTOPERATIONTYPE']), $vchtype, $vchtypename, $vchnumber, $vchref, $adjustmenttype, $remarks);
+                                    }
+                                }
+                            } else {
+                                foreach ($submittedLines as $lineMeta){
+                                    $successCount = $successCount + 1;
+                                    $lineResults[] = array('lineNo' => $lineMeta['lineNo'], 'productCode' => $lineMeta['productCode'], 'qty' => $lineMeta['qty'], 'status' => 'SUCCESS', 'code' => '00', 'message' => 'The operation was successful');
+                                    $this->util->logstockadjustment($this->userid_u, $lineMeta['productCode'], NULL, NULL, NULL, NULL, NULL, NULL, NULL, trim($this->appsettings['STOCKOUTOPERATIONTYPE']), $vchtype, $vchtypename, $vchnumber, $vchref, $adjustmenttype, $remarks);
+                                }
                             }
                         }
-                        
+
+                        if ($failureCount == 0 && $successCount > 0) {
+                            $this->message = "The operation was successful";
+                            $this->code = '00';
+                        } elseif ($failureCount > 0 && $successCount > 0) {
+                            $this->message = "Partial Error. Contact your system administrator! " . implode('; ', array_slice($lineErrorMessages, 0, 3));
+                            $this->code = '45';
+                        } else {
+                            $this->message = sizeof($lineErrorMessages) > 0 ? $lineErrorMessages[0] : "The operation to decrease stock was not successful";
+                            $this->code = '99';
+                        }
                     }
+
+                    $responseData['summary']['successCount'] = $successCount;
+                    $responseData['summary']['failureCount'] = $failureCount;
+                    $responseData['lineResults'] = $lineResults;
                 } else {
                     $this->message = 'The voucher has already been uploaded into EFRIS';
                     $this->code = '99';
                 }
-            } else {
+            } else if (trim($vchnumber) != '' && !empty($vchnumber)) {
                 $this->logger->write("Api : batchstockout() : The user is not allowed to perform this function", 'r');
                 $this->message = "The user is not allowed to perform this function";
                 $this->code = '0099';
@@ -1307,7 +2502,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         
@@ -1318,7 +2513,7 @@ Class Api{
                 "responseCode" => $this->code,
                 "responseMessage" => $this->message
             ),
-            "data" => array()
+            "data" => isset($responseData) ? $responseData : array()
         );
         
         
@@ -1403,7 +2598,17 @@ Class Api{
                         'statuscode' => NULL,
                         'source' => NULL,
                         'exclusion' => NULL,
-                        'serviceMark' => NULL
+                        'serviceMark' => NULL,
+                        'hsCode' => NULL,
+                        'hsName' => NULL,
+                        'customsmeasureunit' => NULL,
+                        'customsunitprice' => NULL,
+                        'packagescaledvaluecustoms' => NULL,
+                        'customsscaledvalue' => NULL,
+                        'weight' => NULL,
+                        'exciseDutyCode' => NULL,
+                        'exciseDutyName' => NULL,
+                        'exciseRate' => NULL
                     );
                     
                     $productid = '';
@@ -1457,6 +2662,19 @@ Class Api{
                                     $product['exclusion'] = $elem['exclusion'];
                                     $product['serviceMark'] = $elem['serviceMark'];
                                     
+                                    /**
+                                     * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                     * Date: 2026-01-10
+                                     * Description: Add additional data points to the product upload operations.
+                                     */
+                                    $product['exciseDutyCode'] = $elem['exciseDutyCode'];
+                                    $product['exciseDutyName'] = $elem['exciseDutyName'];
+                                    $product['exciseRate'] = $elem['exciseRate'];
+                                    $product['pack'] = $elem['pack'];
+                                    $product['stick'] = $elem['stick'];
+                                    $product['goodsTypeCode'] = $elem['goodsTypeCode'];
+                                    $product['haveCustomsUnit'] = $elem['haveCustomsUnit'];
+                                    
                                 } catch (Exception $e) {
                                     $this->logger->write("Api : fetchproduct() : The operation to fetch the product encountered an error. The error message is " . $e->getMessage(), 'r');
                                 }
@@ -1475,13 +2693,13 @@ Class Api{
                             if ($pdct->dry()) {
                                 $this->logger->write("Api : fetchproduct() : The product " . $product['code'] . " does not exist on eTW", 'r');
                                 
-                                $product['description'] = "This product was created by the Dynamics 365 F&O api";
+                                $product['description'] = "This product was created by the FTS api";
                                 $pdct_status = $this->util->createproduct($product, $this->userid_u);
                                 
                             } else {
                                 $this->logger->write("Api : fetchproduct() : The product " . $product['code'] . " exists on eTW", 'r');
                                 
-                                $product['description'] = "This product was updated by the Dynamics 365 F&O api";
+                                $product['description'] = "This product was updated by the FTS api";
                                 $pdct_status = $this->util->updateproduct($product, $this->userid_u);
                             }
                             
@@ -1567,7 +2785,7 @@ Class Api{
                 $ipaddress = trim($json['IPADDRESS']);
                 $macaddress = trim($json['MACADDRESS']);
                 $systemname = trim($json['SYSTEMNAME']);
-                $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+                $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
             } else {
                 $this->logger->write("Api : fetchproduct() : The product code is empty", 'r');
                 $this->message = 'The product/service code is empty. Please configure.';
@@ -1746,13 +2964,13 @@ Class Api{
                                     if ($pdct->dry()) {
                                         $this->logger->write("Api : syncproducts() : The product " . $product['code'] . " does not exist on eTW", 'r');
                                         
-                                        $product['description'] = "This product was created by the Dynamics 365 F&O api";
+                                        $product['description'] = "This product was created by the FTS api";
                                         $pdct_status = $this->util->createproduct($product, $this->userid_u);
                                         
                                     } else {
                                         $this->logger->write("Api : syncproducts() : The product " . $product['code'] . " exists on eTW", 'r');
                                         
-                                        $product['description'] = "This product was updated by the Dynamics 365 F&O api";
+                                        $product['description'] = "This product was updated by the FTS api";
                                         $pdct_status = $this->util->updateproduct($product, $this->userid_u);
                                     }
                                     
@@ -1808,7 +3026,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         
@@ -1893,15 +3111,27 @@ Class Api{
             $ProductPieceScaleValue = $json['PIECESCALEVALUE'];
             $ProductStockPrewarning = $json['STOCKPREWARNING'];
             $unitPrice = $json['UNITPRICE'];
-            $salesTaxGroup = $json['SALESTAXGROUP'];
+            $TaxCode = $json['TAXCODE'];
+            
+            /**
+             * Author: Francis Lubanga <francis.lubanga@gmail.com>
+             * Date: 2026-01-10
+             * Description: Add additional data points to the product upload operations.
+             */
+            $ProductHsCode = $json['HSCODE'];
+            $ProductCustomMeasureUnit = $json['CUSTOMMEASUREUNIT'];
+            $ProductCustomUnitPrice = $json['CUSTOMUNITPRICE'];
+            $ProductCustomPackageScaledValue = $json['CUSTOMPACKAGESCALEDVALUE'];
+            $ProductCustomScaledValue = $json['CUSTOMSCALEDVALUE'];
+            $ProductCustomWeight = $json['CUSTOMWEIGHT'];
             
             $this->logger->write("Api : uploadproduct() : The commodity code is " . $ProductCommodityCode, 'r');
             $this->logger->write("Api : uploadproduct() : The product code is " . $ProductCode, 'r');
-            $this->logger->write("Api : uploadproduct() : The sales tax group is " . $salesTaxGroup, 'r');
+            $this->logger->write("Api : uploadproduct() : The sales tax code is " . $TaxCode, 'r');
             
-            if (trim($salesTaxGroup) == '' || empty($salesTaxGroup)) {
-                $this->logger->write("Api : uploadproduct() : The PRODUCTCODE " . $ProductCode . " does not have a SALESTAXGROUP", 'r');
-                $this->message = "The PRODUCTCODE " . $ProductCode . " does not have a SALESTAXGROUP!";
+            if (trim($TaxCode) == '' || empty($TaxCode)) {
+                $this->logger->write("Api : uploadproduct() : The PRODUCTCODE " . $ProductCode . " does not have a TAXCODE", 'r');
+                $this->message = "The PRODUCTCODE " . $ProductCode . " does not have a TAXCODE!";
                 $this->code = '2398';
                 //break;//exit loop
                 
@@ -1971,9 +3201,9 @@ Class Api{
                     'piecemeasureunit' => $this->util->mapmeasureunit($ProductPieceUnitsMeasureUnit),
                     'havepieceunit' => strtoupper(trim($ProductHavePieceUnits)) == 'NO' || empty(trim($ProductHavePieceUnits)) || trim($ProductHavePieceUnits) == ''? '102' : '101',
                     'pieceunitprice' => empty(trim($ProductPieceUnitPrice))? '' : (float)trim($ProductPieceUnitPrice),
-                    'packagescaledvalue' => empty(trim($ProductPackageScaleValue))? '' : (int)trim($ProductPackageScaleValue),
-                    'piecescaledvalue' => empty(trim($ProductPieceScaleValue))? '' : (int)trim($ProductPieceScaleValue),
-                    'excisedutycode' => trim($ProductExciseDutyCode),
+                    'packagescaledvalue' => empty(trim($ProductPackageScaleValue))? '' : trim($ProductPackageScaleValue),
+                    'piecescaledvalue' => empty(trim($ProductPieceScaleValue))? '' : trim($ProductPieceScaleValue),
+                    'excisedutylist' => NULL,
                     'uraquantity' => 0,
                     'erpquantity' => 0,
                     'purchaseprice' => 0,
@@ -1985,7 +3215,17 @@ Class Api{
                     'statuscode' => NULL,
                     'source' => NULL,
                     'exclusion' => NULL,
-                    'serviceMark' => NULL
+                    'serviceMark' => NULL,
+                    'hsCode' => $this->util->maphscode($ProductHsCode),
+                    'hsName' => NULL,
+                    'customsmeasureunit' => $this->util->mapmeasureunit($ProductCustomMeasureUnit),
+                    'customsunitprice' => empty(trim($ProductCustomUnitPrice))? '' : (float)trim($ProductCustomUnitPrice),
+                    'packagescaledvaluecustoms' => empty(trim($ProductCustomPackageScaledValue))? '' : trim($ProductCustomPackageScaledValue),
+                    'customsscaledvalue' => empty(trim($ProductCustomScaledValue))? '' : trim($ProductCustomScaledValue),
+                    'weight' => empty(trim($ProductCustomWeight))? '' : (int)trim($ProductCustomWeight),
+                    'exciseDutyCode' => $this->util->mapexciseduty(trim($ProductExciseDutyCode)),
+                    'exciseDutyName' => NULL,
+                    'exciseRate' => NULL
                 );
                 
                 if (!empty(trim($ProductAltMeasureUnits))) {
@@ -2061,6 +3301,19 @@ Class Api{
                                     
                                     $product['serviceMark'] = $elem['serviceMark'];
                                     
+                                    /**
+                                     * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                     * Date: 2026-01-10
+                                     * Description: Add additional data points to the product upload operations.
+                                     */
+                                    $product['exciseDutyCode'] = $elem['exciseDutyCode'];
+                                    $product['exciseDutyName'] = $elem['exciseDutyName'];
+                                    $product['exciseRate'] = $elem['exciseRate'];
+                                    $product['pack'] = $elem['pack'];
+                                    $product['stick'] = $elem['stick'];
+                                    $product['goodsTypeCode'] = $elem['goodsTypeCode'];
+                                    $product['haveCustomsUnit'] = $elem['haveCustomsUnit'];
+                                    
                                     $this->logger->write("Api : uploadproduct() : Product Code - " . $product['code'] . " - was fetched & attributes updated successfully by " . $this->username, 'r');
                                 } catch (Exception $e) {
                                     $this->logger->write("Api : uploadproduct() : The operation to fetch the product was not successful. The error message is " . $e->getMessage(), 'r');
@@ -2082,13 +3335,13 @@ Class Api{
                         if ($pdct->dry()) {
                             $this->logger->write("Api : uploadproduct() : The product " . $product['code'] . " does not exist on eTW", 'r');
                             
-                            $product['description'] = "This product was created by the Dynamics 365 F&O api";
+                            $product['description'] = "This product was created by the FTS api";
                             $pdct_status = $this->util->createproduct($product, $this->userid_u);
                             
                         } else {
                             $this->logger->write("Api : uploadproduct() : The product " . $product['code'] . " exists on eTW", 'r');
                             
-                            $product['description'] = "This product was updated by the Dynamics 365 F&O api";
+                            $product['description'] = "This product was updated by the FTS api";
                             $pdct_status = $this->util->updateproduct($product, $this->userid_u);
                         }
                         
@@ -2185,7 +3438,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         
@@ -2248,43 +3501,90 @@ Class Api{
             $qty = trim($json['QTY']);
             $remarks = trim($json['REMARKS']);
             
+            /**
+             * Modification Date: 2026-05-07
+             * Modified By: Francis Lubanga
+             * Description: Capture voucher metadata for stocktransfer duplicate-upload control.
+             * */
+            $vchtype = empty($json['VOUCHERTYPE']) ? '' : trim((string)$json['VOUCHERTYPE']);
+            $vchtypename = empty($json['VOUCHERTYPENAME']) ? '' : trim((string)$json['VOUCHERTYPENAME']);
+            $vchnumber = empty($json['VOUCHERNUMBER']) ? '' : trim((string)$json['VOUCHERNUMBER']);
+            $vchref = empty($json['VOUCHERREF']) ? '' : trim((string)$json['VOUCHERREF']);
+            
             $this->logger->write("Api : stocktransfer() : The userid is: " . $this->userid_u, 'r');
             
             $this->logger->write("Api : stocktransfer() : Checking permissions", 'r');
             if ($this->userpermissions[$permission]) {
-                
-                $pdct = new products($this->db);
-                $pdct->getByErpCode(strtoupper(trim($ProductCode)));
-                
-                $product = array(
-                    'uraproductidentifier' => $pdct['uraproductidentifier'],
-                    'name' => $pdct['name'],
-                    'code' => strtoupper(trim($ProductCode)),
-                    'measureunit' => $pdct['measureunit']
-                );
-                
-                $data = $this->util->transferproductstock($this->userid_u, $product, $sourcebranch, $destbranch, $qty, $remarks);//will return JSON.
-                $data = json_decode($data, true);
-                
-                if(isset($data['returnCode'])){
-                    $this->logger->write("Api : stocktransfer() : The operation to transfer stock was not successful. The error message is " . $data['returnMessage'], 'r');
-                    $this->message = $data['returnMessage'];
-                    $this->code = $data['returnCode'];
-                    
+                /**
+                 * Modification Date: 2026-05-07
+                 * Modified By: Francis Lubanga
+                 * Description: Enforce mandatory voucher number for stock-transfer fail-fast validation.
+                 * */
+                if ($vchnumber === '') {
+                    $this->logger->write("Api : stocktransfer() : No voucher number was supplied", 'r');
+                    $this->message = "No voucher number was supplied";
+                    $this->code = '-999';
+
                     $body = $this->code . ' : ' . $this->message;
                     $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
                 } else {
-                    if ($data) {
-                        foreach($data as $elem){
-                            $this->message = $elem['returnMessage'];
-                            $this->code = $elem['returnCode'];
-                        }
-                    } else {
-                        $this->message = "The operation was successful";
-                        $this->code = '00';
-                        $this->util->logstocktransfer($this->userid_u, strtoupper($ProductCode), $qty, NULL, NULL, NULL, NULL, $remarks, $sourcebranch, $destbranch, '101', $pdct['uraproductidentifier']);
-                    }
+                /**
+                 * Modification Date: 2026-05-07
+                 * Modified By: Francis Lubanga
+                 * Description: Prevent duplicate stock-transfer uploads by voucher number.
+                 * */
+                $vch_check = new DB\SQL\Mapper($this->db, 'tblgoodsstocktransfer');
+
+                $vch_check->load(array('TRIM(voucherNumber)=?', $vchnumber));
+                $this->logger->write($this->db->log(TRUE), 'r');
+
+                if (!$vch_check->dry()) {
+                    $this->logger->write("Api : stocktransfer() : Duplicate voucher number detected: " . $vchnumber, 'r');
+                    $this->message = 'The voucher/journal has already been uploaded into EFRIS';
+                    $this->code = '99';
+                } else {
+                    $pdct = new products($this->db);
+                    $pdct->getByErpCode(strtoupper(trim($ProductCode)));
+
+                    $mappedSourceBranch = $this->util->mapbranchcode($sourcebranch);
+                    $sourcebranch = (trim((string)$mappedSourceBranch) != '') ? $mappedSourceBranch : $sourcebranch;
+
+                    $mappedDestBranch = $this->util->mapbranchcode($destbranch);
+                    $destbranch = (trim((string)$mappedDestBranch) != '') ? $mappedDestBranch : $destbranch;
+
+                    $resolvedProductCode = !$pdct->dry() && trim($pdct['code']) != '' ? strtoupper(trim($pdct['code'])) : strtoupper(trim($ProductCode));
                     
+                    $product = array(
+                        'uraproductidentifier' => $pdct['uraproductidentifier'],
+                        'name' => $pdct['name'],
+                        'code' => $resolvedProductCode,
+                        'measureunit' => $pdct['measureunit']
+                    );
+                    
+                    $data = $this->util->transferproductstock($this->userid_u, $product, $sourcebranch, $destbranch, $qty, $remarks);//will return JSON.
+                    $data = json_decode($data, true);
+                    
+                    if(isset($data['returnCode'])){
+                        $this->logger->write("Api : stocktransfer() : The operation to transfer stock was not successful. The error message is " . $data['returnMessage'], 'r');
+                        $this->message = $data['returnMessage'];
+                        $this->code = $data['returnCode'];
+                        
+                        $body = $this->code . ' : ' . $this->message;
+                        $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+                    } else {
+                        if ($data) {
+                            foreach($data as $elem){
+                                $this->message = $elem['returnMessage'];
+                                $this->code = $elem['returnCode'];
+                            }
+                        } else {
+                            $this->message = "The operation was successful";
+                            $this->code = '00';
+                            $this->util->logstocktransfer($this->userid_u, $resolvedProductCode, $qty, $vchtype, $vchtypename, $vchnumber, $vchref, $remarks, $sourcebranch, $destbranch, '101', $pdct['uraproductidentifier']);
+                        }
+                        
+                    }
+                }
                 }
                 
             } else {
@@ -2298,7 +3598,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
         
@@ -2321,6 +3621,200 @@ Class Api{
     }
     
     
+    /**
+     *	@name batchstocktransfer
+     *  @desc transfer stock for one or more products
+     *	@return string response
+     *	@param NULL
+     **/
+    function batchstocktransfer(){
+        $operation = NULL; //tblevents
+        $permission = 'TRANSFERPRODUCTSTOCK'; //tblpermissions
+        $event = NULL; //tblevents
+        $eventnotification = NULL; //tbleventnotifications
+
+        if ($this->errorcode) {
+            $this->message = $this->errormessage;
+            $this->code = $this->errorcode;
+
+            $body = $this->code . ' : ' . $this->message;
+            $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+        } else {
+            if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
+                date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
+            }
+
+            $json = json_decode($this->json, TRUE); //convert JSON into array
+
+            $sourcebranch = empty($json['SOURCEBRANCH']) ? '' : trim((string)$json['SOURCEBRANCH']);
+            $destbranch = empty($json['DESTBRANCH']) ? '' : trim((string)$json['DESTBRANCH']);
+            $remarks = empty($json['REMARKS']) ? '' : trim((string)$json['REMARKS']);
+
+            $vchtype = empty($json['VOUCHERTYPE']) ? '' : trim((string)$json['VOUCHERTYPE']);
+            $vchtypename = empty($json['VOUCHERTYPENAME']) ? '' : trim((string)$json['VOUCHERTYPENAME']);
+            $vchnumber = empty($json['VOUCHERNUMBER']) ? '' : trim((string)$json['VOUCHERNUMBER']);
+            $vchref = empty($json['VOUCHERREF']) ? '' : trim((string)$json['VOUCHERREF']);
+
+            $responseData = array(
+                'voucherNumber' => $vchnumber,
+                'voucherRef' => $vchref,
+                'sourceBranch' => $sourcebranch,
+                'destBranch' => $destbranch,
+                'summary' => array(
+                    'totalLines' => 0,
+                    'successCount' => 0,
+                    'failureCount' => 0
+                ),
+                'lineResults' => array()
+            );
+
+            if ($this->userpermissions[$permission]) {
+                if ($vchnumber === '') {
+                    $this->message = "No voucher number was supplied";
+                    $this->code = '-999';
+                } else {
+                    $vch_check = new DB\SQL\Mapper($this->db, 'tblgoodsstocktransfer');
+                    $vch_check->load(array('TRIM(voucherNumber)=?', $vchnumber));
+
+                    if (!$vch_check->dry()) {
+                        $this->message = 'The voucher/journal has already been uploaded into EFRIS';
+                        $this->code = '99';
+                    } else {
+                        $inventoryLines = (isset($json['INVENTORIES']) && is_array($json['INVENTORIES'])) ? $json['INVENTORIES'] : array();
+                        if (sizeof($inventoryLines) == 0) {
+                            $this->message = 'No inventories were supplied';
+                            $this->code = '-998';
+                        } else {
+                            $mappedSourceBranch = $this->util->mapbranchcode($sourcebranch);
+                            $sourcebranch = (trim((string)$mappedSourceBranch) != '') ? $mappedSourceBranch : $sourcebranch;
+                            $responseData['sourceBranch'] = $sourcebranch;
+
+                            $mappedDestBranch = $this->util->mapbranchcode($destbranch);
+                            $destbranch = (trim((string)$mappedDestBranch) != '') ? $mappedDestBranch : $destbranch;
+                            $responseData['destBranch'] = $destbranch;
+
+                            $successCount = 0;
+                            $failureCount = 0;
+                            $errorCodes = array();
+                            $errorMessages = array();
+                            $lineResults = array();
+                            $lineNo = 0;
+
+                            $responseData['summary']['totalLines'] = sizeof($inventoryLines);
+
+                            foreach ($inventoryLines as $obj) {
+                                $lineNo = $lineNo + 1;
+                                $productcode = empty($obj['PRODUCTCODE']) ? '' : strtoupper(trim((string)$obj['PRODUCTCODE']));
+                                $qty = empty($obj['QTY']) ? '' : trim((string)$obj['QTY']);
+
+                                if ($productcode === '' || $qty === '') {
+                                    $failureCount = $failureCount + 1;
+                                    $errorCodes[] = '-997';
+                                    $errorMessages[] = 'Missing PRODUCTCODE and/or QTY for one inventory line';
+                                    $lineResults[] = array('lineNo' => $lineNo, 'productCode' => $productcode, 'qty' => $qty, 'status' => 'ERROR', 'code' => '-997', 'message' => 'Missing PRODUCTCODE and/or QTY for one inventory line');
+                                    continue;
+                                }
+
+                                $pdct = new products($this->db);
+                                $pdct->getByErpCode($productcode);
+                                $resolvedProductCode = !$pdct->dry() && trim($pdct['code']) != '' ? strtoupper(trim($pdct['code'])) : $productcode;
+
+                                $product = array(
+                                    'uraproductidentifier' => !$pdct->dry() ? $pdct['uraproductidentifier'] : NULL,
+                                    'name' => !$pdct->dry() ? $pdct['name'] : NULL,
+                                    'code' => $resolvedProductCode,
+                                    'measureunit' => !$pdct->dry() ? $pdct['measureunit'] : NULL
+                                );
+
+                                $data = $this->util->transferproductstock($this->userid_u, $product, $sourcebranch, $destbranch, $qty, $remarks);
+                                $data = json_decode($data, true);
+
+                                if (isset($data['returnCode'])) {
+                                    $failureCount = $failureCount + 1;
+                                    $errorCodes[] = $data['returnCode'];
+                                    $errorMessages[] = $resolvedProductCode . ': ' . $data['returnMessage'];
+                                    $lineResults[] = array('lineNo' => $lineNo, 'productCode' => $resolvedProductCode, 'qty' => $qty, 'status' => 'ERROR', 'code' => $data['returnCode'], 'message' => $data['returnMessage']);
+                                    continue;
+                                }
+
+                                if ($data) {
+                                    $lineErrorCaptured = FALSE;
+                                    $lineErrorCode = '';
+                                    $lineErrorMessages = array();
+                                    foreach($data as $elem){
+                                        if (isset($elem['returnCode'])) {
+                                            $lineErrorCaptured = TRUE;
+                                            if ($lineErrorCode === '') {
+                                                $lineErrorCode = $elem['returnCode'];
+                                            }
+                                            if (isset($elem['returnMessage']) && trim((string)$elem['returnMessage']) !== '') {
+                                                $lineErrorMessages[] = trim((string)$elem['returnMessage']);
+                                            }
+                                        }
+                                    }
+
+                                    if ($lineErrorCaptured) {
+                                        $failureCount = $failureCount + 1;
+                                        $errorCodes[] = $lineErrorCode === '' ? '99' : $lineErrorCode;
+                                        $lineMessage = sizeof($lineErrorMessages) > 0 ? implode('; ', $lineErrorMessages) : 'The operation to transfer stock was not successful';
+                                        $errorMessages[] = $resolvedProductCode . ': ' . $lineMessage;
+                                        $lineResults[] = array('lineNo' => $lineNo, 'productCode' => $resolvedProductCode, 'qty' => $qty, 'status' => 'ERROR', 'code' => $lineErrorCode === '' ? '99' : $lineErrorCode, 'message' => $lineMessage);
+                                    } else {
+                                        $successCount = $successCount + 1;
+                                        $this->util->logstocktransfer($this->userid_u, $resolvedProductCode, $qty, $vchtype, $vchtypename, $vchnumber, $vchref, $remarks, $sourcebranch, $destbranch, '101', !$pdct->dry() ? $pdct['uraproductidentifier'] : NULL);
+                                        $lineResults[] = array('lineNo' => $lineNo, 'productCode' => $resolvedProductCode, 'qty' => $qty, 'status' => 'SUCCESS', 'code' => '00', 'message' => 'The operation was successful');
+                                    }
+                                } else {
+                                    $successCount = $successCount + 1;
+                                    $this->util->logstocktransfer($this->userid_u, $resolvedProductCode, $qty, $vchtype, $vchtypename, $vchnumber, $vchref, $remarks, $sourcebranch, $destbranch, '101', !$pdct->dry() ? $pdct['uraproductidentifier'] : NULL);
+                                    $lineResults[] = array('lineNo' => $lineNo, 'productCode' => $resolvedProductCode, 'qty' => $qty, 'status' => 'SUCCESS', 'code' => '00', 'message' => 'The operation was successful');
+                                }
+                            }
+
+                            $responseData['summary']['successCount'] = $successCount;
+                            $responseData['summary']['failureCount'] = $failureCount;
+                            $responseData['lineResults'] = $lineResults;
+
+                            if ($failureCount == 0 && $successCount > 0) {
+                                $this->message = 'The operation was successful';
+                                $this->code = '00';
+                            } elseif ($failureCount > 0 && $successCount > 0) {
+                                $this->message = 'Partial Error. Contact your system administrator! ' . implode('; ', array_slice($errorMessages, 0, 3));
+                                $this->code = '45';
+                            } else {
+                                $this->message = sizeof($errorMessages) > 0 ? $errorMessages[0] : 'The operation to transfer stock was not successful';
+                                $this->code = sizeof($errorCodes) > 0 ? $errorCodes[0] : '99';
+                            }
+                        }
+                    }
+                }
+            } else {
+                $this->message = "The user is not allowed to perform this function";
+                $this->code = '0099';
+            }
+
+            $activity = 'BATCHSTOCKTRANSFER: ' . $vchnumber . ': ' . $vchref . ': ' . $this->message;
+            $windowsuser = trim($json['WINDOWSUSER']);
+            $ipaddress = trim($json['IPADDRESS']);
+            $macaddress = trim($json['MACADDRESS']);
+            $systemname = trim($json['SYSTEMNAME']);
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+        }
+
+        $this->response = array(
+            "response" => array(
+                "responseCode" => $this->code,
+                "responseMessage" => $this->message
+            ),
+            "data" => isset($responseData) ? $responseData : array()
+        );
+
+        $len = sizeof($this->response);
+        header ("CONTENT-LENGTH:".$len);
+        die(json_encode($this->response));
+        return;
+    }
+
     /**
      *	@name uploadinvoice
      *  @desc upload invoice
@@ -2434,7 +3928,7 @@ Class Api{
                         'itemcount' => NULL,
                         'modecode' => NULL,
                         'modename' => NULL,
-                        'remarks' => NULL,
+                        'remarks' => trim($json['REMARKS']),
                         'buyerid' => NULL,
                         'sellerid' => $this->appsettings['SELLER_RECORD_ID'],
                         'issueddatepdf' => NULL,
@@ -2442,7 +3936,11 @@ Class Api{
                         'isinvalid' => 0,
                         'isrefund' => 0,
                         'vchtype' => $vchtype,
-                        'vchtypename' => $vchtypename
+                        'vchtypename' => $vchtypename,
+                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                        'vatProjectId' => trim($json['PROJECTID']),
+                        'vatProjectName' => trim($json['PROJECTNAME']),
+                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE']))
                     );
                     
                     $buyer = array(
@@ -2460,7 +3958,11 @@ Class Api{
                         'citizineship' => trim($json['BUYERCITIZENSHIP']),
                         'sector' => trim($json['BUYERSECTOR']),
                         'referenceno' => trim($json['BUYERREFERENCENO']),
-                        'datasource' => $this->appsettings['WESERVICEDS']
+                        'datasource' => $this->appsettings['WESERVICEDS'],
+                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                        'vatProjectId' => trim($json['PROJECTID']),
+                        'vatProjectName' => trim($json['PROJECTNAME']),
+                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE']))
                     );
                     
                     
@@ -2534,15 +4036,22 @@ Class Api{
                      */
                     $mapped_fees = array();
                     
+                    /**
+                     * Author: francis.lubanga@gmail.com
+                     * Date: 2026-01-10
+                     * Description: We wil hold excise duty related details here.
+                     */
+                    $exciseduty_details = array();
+                    
                     if(trim($this->appsettings['CHECK_FEE_MAP_FLAG']) == '1'){
-                        $this->logger->write("Utilities : uploadinvoice() : The check fees mapping is on", 'r');
+                        $this->logger->write("Api : uploadinvoice() : The check fees mapping is on", 'r');
                         
                         $feesmapping = new feesmapping($this->db);
                         $feesmappings = $feesmapping->all();
                         
                         foreach ($feesmappings as $f_obj) {
-                            $this->logger->write("Utilities : uploadinvoice() : The fee code is " . $f_obj['feecode'], 'r');
-                            $this->logger->write("Utilities : uploadinvoice() : The product code is " . strtoupper($f_obj['productcode']), 'r');
+                            $this->logger->write("Api : uploadinvoice() : The fee code is " . $f_obj['feecode'], 'r');
+                            $this->logger->write("Api : uploadinvoice() : The product code is " . strtoupper($f_obj['productcode']), 'r');
                             
                             $mapped_fees[] = array(
                                 'id' => empty($f_obj['id'])? '' : $f_obj['id'],
@@ -2595,18 +4104,167 @@ Class Api{
                             $erpTaxRate = empty(trim($obj['TAXRATE']))? 0 : trim($obj['TAXRATE']);
                             $discount = empty(trim($obj['DISCOUNT']))? 0 : (float)trim($obj['DISCOUNT']);
                             $discountpct = empty(trim($obj['DISCOUNTPCT']))? 0 : (float)trim($obj['DISCOUNTPCT']);
-                            $taxcode = $obj['SALESTAXGROUP'];
+                            $lineDiscountFlag = '';
+                            if (isset($obj['DISCOUNTFLAG'])) {
+                                $lineDiscountFlag = strtoupper(trim((string)$obj['DISCOUNTFLAG']));
+                            } elseif (isset($obj['discountflag'])) {
+                                $lineDiscountFlag = strtoupper(trim((string)$obj['discountflag']));
+                            }
+
+                            if (in_array($lineDiscountFlag, array('1', 'YES', 'Y', 'TRUE'), true)) {
+                                $lineDiscountFlag = '1';
+                            } elseif (in_array($lineDiscountFlag, array('2', '0', 'NO', 'N', 'FALSE'), true)) {
+                                $lineDiscountFlag = '2';
+                            } else {
+                                $lineDiscountFlag = '';
+                            }
+
+                            // Maintainer note (2026-04-14): enforce explicit discount semantics.
+                            // When a line carries discount amount/percentage, ERP must send DISCOUNTFLAG too.
+                            // Maintainer note (2026-04-17): DISCOUNTPCT is a decimal fraction (0.25 = 25%).
+                            // For DISCOUNTFLAG=1, both DISCOUNT and DISCOUNTPCT must be non-empty and > 0.
+                            $discountRaw = isset($obj['DISCOUNT']) ? trim((string)$obj['DISCOUNT']) : '';
+                            $discountPctRaw = isset($obj['DISCOUNTPCT']) ? trim((string)$obj['DISCOUNTPCT']) : '';
+                            $discountAmountValue = ($discountRaw !== '') ? (float)$this->util->removecommasfromamount($discountRaw) : 0;
+                            $discountPctValue = ($discountPctRaw !== '') ? (float)$this->util->removecommasfromamount($discountPctRaw) : 0;
+                            $hasLineDiscount = ($discountAmountValue > 0 || $discountPctValue > 0);
+
+                            if ($discountPctRaw !== '' && $discountPctValue > 1) {
+                                $this->logger->write("Api : uploadinvoice() : DISCOUNTPCT must be a decimal fraction for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has invalid DISCOUNTPCT. Send a decimal fraction (e.g. 0.25 for 25%).";
+                                $this->code = '-999';
+
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+
+                                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload an invoice failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                                $this->response = array(
+                                    "response" => array(
+                                        "responseCode" => $this->code,
+                                        "responseMessage" => $this->message
+                                    ),
+                                    "data" => array(
+                                        "INVID" => "",
+                                        "INVNO" => "",
+                                        "ISSUEDT" => "",
+                                        "FDN" => "",
+                                        "QRCODE" => ""
+                                    )
+                                );
+
+                                $len = sizeof($this->response);
+                                header ("CONTENT-LENGTH:".$len);
+                                die(json_encode($this->response));
+                                return;
+                            }
+
+                            // Maintainer note (2026-04-14): fail fast to avoid implicit flag inference.
+                            if ($hasLineDiscount && $lineDiscountFlag == '') {
+                                $this->logger->write("Api : uploadinvoice() : DISCOUNTFLAG is required when DISCOUNT or DISCOUNTPCT is populated for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has DISCOUNT/DISCOUNTPCT but no valid DISCOUNTFLAG. Expected 1 or 2.";
+                                $this->code = '-999';
+
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+
+                                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload an invoice failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                                $this->response = array(
+                                    "response" => array(
+                                        "responseCode" => $this->code,
+                                        "responseMessage" => $this->message
+                                    ),
+                                    "data" => array(
+                                        "INVID" => "",
+                                        "INVNO" => "",
+                                        "ISSUEDT" => "",
+                                        "FDN" => "",
+                                        "QRCODE" => ""
+                                    )
+                                );
+
+                                $len = sizeof($this->response);
+                                header ("CONTENT-LENGTH:".$len);
+                                die(json_encode($this->response));
+                                return;
+                            }
+
+                            if ($lineDiscountFlag == '1' && ($discountAmountValue <= 0 || $discountPctValue <= 0)) {
+                                $this->logger->write("Api : uploadinvoice() : DISCOUNT and DISCOUNTPCT are mandatory and must be > 0 when DISCOUNTFLAG=1 for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has DISCOUNTFLAG=1 but DISCOUNT and DISCOUNTPCT are missing/zero.";
+                                $this->code = '-999';
+
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+
+                                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload an invoice failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                                $this->response = array(
+                                    "response" => array(
+                                        "responseCode" => $this->code,
+                                        "responseMessage" => $this->message
+                                    ),
+                                    "data" => array(
+                                        "INVID" => "",
+                                        "INVNO" => "",
+                                        "ISSUEDT" => "",
+                                        "FDN" => "",
+                                        "QRCODE" => ""
+                                    )
+                                );
+
+                                $len = sizeof($this->response);
+                                header ("CONTENT-LENGTH:".$len);
+                                die(json_encode($this->response));
+                                return;
+                            }
+                            $taxcode = $obj['TAXCODE'];
                             $tr->getByErpCode($taxcode);
                             $taxid = $tr->id;
+                            
                             
                             /**
                              * Can we determine the DISCOUNT PERCENTAGE incase it is a line DISCOUNT provided?
                              */
-                            if ($discountpct == 0 && $discount > 0) {
+                            if ($lineDiscountFlag == '1') {
+                                $discountpct = $discountPctValue;
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
+                            } elseif ($discountpct == 0 && $discount > 0 && (float)$amount > 0) {
                                 $discountpct = $discount/$amount;
-                                $discount = 0;
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
                             } else {
-                                $discount = 0;
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
                             }
                             
                             if (trim($taxcode) == '' || empty($taxcode)) {
@@ -2616,7 +4274,7 @@ Class Api{
                                 //break;//exit loop
                                 
                                 //return to the client
-                                $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
                                 
                                 $body = '<html><body>
                                                 <p>Hello,</p></br>
@@ -2661,7 +4319,7 @@ Class Api{
                                     //break;//exit loop
                                     
                                     //return to the client
-                                    $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                    $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
                                     
                                     $body = '<html><body>
                                                 <p>Hello,</p></br>
@@ -2711,12 +4369,111 @@ Class Api{
                                     if (trim($product->commoditycategorycode) == '96010102') {
                                         $this->logger->write("Api : uploadinvoice() : The product code is 96010102. Hard coding the tax id to 13", 'r');
                                         $taxid = '13'; // 13 is the tax id for VAT OUT OF SCOPE
+                                        
+                                        $tr->getByID($taxid);
                                     }                                   
                                     
                                     $this->logger->write("Api : uploadinvoice() : The final TAXID is " . $taxid, 'r');
                                     
+                                    /**
+                                     * Date: 2026-01-11
+                                     * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                     * Description: Check for export & export service
+                                     */
+                                    //if (str_contains(strtolower($json['BUYERPLACEOFBUSI']), "uganda")) {
+                                    if (stripos(strtolower($json['BUYERPLACEOFBUSI']), "uganda") !== false) {
+                                        $this->logger->write("Api : uploadinvoice() : This is a local invoice" , 'r');
+                                        
+                                        /**
+                                         * Date: 2026-01-09
+                                         * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                         * Description: Implement excise duty
+                                         */
+                                        
+                                        if (strlen(trim($product->exciseDutyCode)) != 0 && trim($product->exciseDutyCode) != 'NULL' && trim($product->hasexcisetax) == '101') {
+                                            $this->logger->write("Api : uploadinvoice() : The product has excise duty", 'r');
+                                            
+                                            $exciseduty_details[] = $this->util->computeExciseDuty($this->userid_u, $product->code, $qty, $unit, $amount, $discount, $discountpct);
+                                            
+                                            $this->logger->write("Api : uploadinvoice() : The excise duty count: " . sizeof($exciseduty_details), 'r');
+                                            $this->logger->write("Api : uploadinvoice() : exciseduty_details = " . json_encode($exciseduty_details), 'r');
+                                            
+                                            $this->logger->write("Api : uploadinvoice() : itemCode = " . $exciseduty_details[0][0]['itemCode'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : exciseFlag = " . $exciseduty_details[0][0]['exciseFlag'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : categoryId = " . $exciseduty_details[0][0]['categoryId'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : categoryName = " . $exciseduty_details[0][0]['categoryName'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : exciseRate = " . $exciseduty_details[0][0]['exciseRate'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : exciseRule = " . $exciseduty_details[0][0]['exciseRule'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : exciseTax = " . $exciseduty_details[0][0]['exciseTax'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : pack = " . $exciseduty_details[0][0]['pack'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : stick = " . $exciseduty_details[0][0]['stick'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : exciseUnit = " . $exciseduty_details[0][0]['exciseUnit'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : exciseCurrency = " . $exciseduty_details[0][0]['exciseCurrency'], 'r');
+                                            $this->logger->write("Api : uploadinvoice() : exciseRateName = " . $exciseduty_details[0][0]['exciseRateName'], 'r');
+                                            
+                                            // Adjust the amount from the ERP accordingly
+                                            $unit = (float)$unit + ((float)$exciseduty_details[0][0]['exciseTax'])/$qty;
+                                        } else {
+                                            $this->logger->write("Api : uploadinvoice() : The product has NO excise duty", 'r');
+                                        }
+                                    } else {
+                                        $this->logger->write("Api : uploadinvoice() : The place of business is " . $json['BUYERPLACEOFBUSI'], 'r');
+                                        
+                                        
+                                        if(strtoupper(trim($json['NONRESIDENTFLAG'])) == '1'){
+                                            $this->logger->write("Api : uploadinvoice() : The buyer is Non-Resident", 'r');
+                                            
+                                            if(trim($json['INDUSTRYCODE']) == '112'){
+                                                $this->logger->write("Api : uploadinvoice() : This is an export service", 'r');
+                                                $taxid = '2'; // B: Zero (0%)
+                                                
+                                                $tr->getByID($taxid);
+                                            } elseif(trim($json['INDUSTRYCODE']) == '102'){
+                                                $this->logger->write("Api : uploadinvoice() : This is an export", 'r');
+                                                $taxid = '2'; // B: Zero (0%)
+                                                
+                                                $tr->getByID($taxid);
+                                            }
+                                            
+                                            
+                                        } else {
+                                            $this->logger->write("Api : uploadinvoice() : The buyer is a Resident", 'r');
+                                            
+                                            if (strlen(trim($product->exciseDutyCode)) != 0 && trim($product->exciseDutyCode) != 'NULL' && trim($product->hasexcisetax) == '101') {
+                                                $this->logger->write("Api : uploadinvoice() : The product has excise duty", 'r');
+                                                
+                                                $exciseduty_details[] = $this->util->computeExciseDuty($this->userid_u, $product->code, $qty, $unit, $amount, $discount, $discountpct);
+                                                
+                                                $this->logger->write("Api : uploadinvoice() : The excise duty count: " . sizeof($exciseduty_details), 'r');
+                                                $this->logger->write("Api : uploadinvoice() : exciseduty_details = " . json_encode($exciseduty_details), 'r');
+                                                
+                                                $this->logger->write("Api : uploadinvoice() : itemCode = " . $exciseduty_details[0][0]['itemCode'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : exciseFlag = " . $exciseduty_details[0][0]['exciseFlag'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : categoryId = " . $exciseduty_details[0][0]['categoryId'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : categoryName = " . $exciseduty_details[0][0]['categoryName'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : exciseRate = " . $exciseduty_details[0][0]['exciseRate'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : exciseRule = " . $exciseduty_details[0][0]['exciseRule'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : exciseTax = " . $exciseduty_details[0][0]['exciseTax'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : pack = " . $exciseduty_details[0][0]['pack'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : stick = " . $exciseduty_details[0][0]['stick'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : exciseUnit = " . $exciseduty_details[0][0]['exciseUnit'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : exciseCurrency = " . $exciseduty_details[0][0]['exciseCurrency'], 'r');
+                                                $this->logger->write("Api : uploadinvoice() : exciseRateName = " . $exciseduty_details[0][0]['exciseRateName'], 'r');
+                                                
+                                                // Adjust the amount from the ERP accordingly
+                                                $unit = (float)$unit + ((float)$exciseduty_details[0][0]['exciseTax'])/$qty;
+                                            } else {
+                                                $this->logger->write("Api : uploadinvoice() : The product has NO excise duty", 'r');
+                                            }
+                                        }
+                                    }
+                                    
+                                    
+                                    
+                                    
                                     $taxname = $tr->name;
-                                    $taxcategory = $tr->category;
+                                    // $taxcategory = $tr->category;
+                                    $taxcategory = $tr->description;
                                     $taxdisplaycategory = $tr->displayCategoryCode;
                                     $taxdescription = $tr->description;
                                     $rate = $tr->rate? $tr->rate : $erpTaxRate;
@@ -2737,7 +4494,7 @@ Class Api{
                                         
                                         $total = ($qty * $unit);//??
                                         
-                                        $discount = ($discountpct/100) * $total;
+                                        $discount = $discountpct * $total;
                                         
                                         /**
                                          * Modification Date: 2021-01-26
@@ -2759,7 +4516,7 @@ Class Api{
                                          */
                                         $total = ($qty * $unit);
                                         
-                                        $discount = ($discountpct/100) * $total;
+                                        $discount = $discountpct * $total;
                                         
                                         /**
                                          * Modification Date: 2021-01-26
@@ -2792,11 +4549,17 @@ Class Api{
                                     $grossamount = $grossamount + $gross;
                                     $itemcount = $itemcount + 1;
                                     
-                                    if ($discount == 0) {
+                                    if ($lineDiscountFlag == '1') {
+                                        $discountflag = 'YES';
+                                    } elseif ($lineDiscountFlag == '2') {
+                                        $discountflag = 'NO';
+                                    } elseif ($discount == 0) {
                                         $discountflag = 'NO';
                                     } else {
                                         $discountflag = 'YES';
                                     }
+
+                                    $effectiveDiscountFlag = trim($discountflag) == 'NO'? '2' : '1';
                                     
                                     
                                     $goods[] = array(
@@ -2814,32 +4577,38 @@ Class Api{
                                         'discounttaxrate' => $rate,
                                         'discountpercentage' => $discountpct,
                                         'ordernumber' => NULL,
-                                        'discountflag' => trim($discountflag) == 'NO'? '2' : '1',
+                                        'discountflag' => $effectiveDiscountFlag,
                                         'deemedflag' => (strtoupper(trim($deemedflag)) == 'NO'? '2' : '1'),
-                                        'exciseflag' => NULL,
-                                        'categoryid' => NULL,
-                                        'categoryname' => NULL,
+                                        'exciseflag' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseFlag'] : NULL,
+                                        'categoryid' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['categoryId'] : NULL,
+                                        'categoryname' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['categoryName'] : NULL,
                                         'goodscategoryid' => $product->commoditycategorycode,
                                         'goodscategoryname' => NULL,
-                                        'exciserate' => NULL,
-                                        'exciserule' => NULL,
-                                        'excisetax' => NULL,
-                                        'pack' => NULL,
-                                        'stick' => NULL,
-                                        'exciseunit' => NULL,
-                                        'excisecurrency' => NULL,
-                                        'exciseratename' => NULL,
+                                        'exciserate' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRate'] : NULL,
+                                        'exciserule' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRule'] : NULL,
+                                        'excisetax' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseTax'] : NULL,
+                                        'pack' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['pack'] : NULL,
+                                        'stick' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['stick'] : NULL,
+                                        'exciseunit' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseUnit'] : NULL,
+                                        'excisecurrency' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseCurrency'] : NULL,
+                                        'exciseratename' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRateName'] : NULL,
                                         'taxdisplaycategory' => $taxdisplaycategory,
                                         'taxcategory' => $taxcategory,
                                         'taxcategoryCode' => $tr->code,
-                                        'unitofmeasurename' => $measureunit->name
+                                        'unitofmeasurename' => $measureunit->name,
+                                        'pieceMeasureUnit' => $product->piecemeasureunit,
+                                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                                        'vatProjectId' => trim($json['PROJECTID']),
+                                        'vatProjectName' => trim($json['PROJECTNAME']),
+                                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE']))
+
                                     );
                                     
                                     
                                     
                                     if ($this->vatRegistered == 'Y') {
                                         $taxes[] = array(
-                                            'discountflag' => trim($discountflag) == 'NO'? '2' : '1',
+                                            'discountflag' => $effectiveDiscountFlag,
                                             'discounttotal' => $discount,
                                             'discounttaxrate' => $rate,
                                             'discountpercentage' => $discountpct,
@@ -2855,15 +4624,49 @@ Class Api{
                                             'taxrate' => $rate,
                                             'taxamount' => $tax,
                                             'grossamount' => $gross,
-                                            'exciseunit' => NULL,
-                                            'excisecurrency' => NULL,
+                                            'exciseunit' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseUnit'] : NULL,
+                                            'excisecurrency' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseCurrency'] : NULL,
                                             'taxratename' => $taxname,
                                             'taxdescription' => $taxdescription
                                         );
+                                        
+                                        /**
+                                         * Date: 2026-01-10
+                                         * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                         * Description: Add an excise duty tax block to the tax array
+                                         */
+                                        if(sizeof($exciseduty_details) == 1){
+                                            $taxes[] = array(
+                                                'discountflag' => $effectiveDiscountFlag,
+                                                'discounttotal' => $discount,
+                                                'discounttaxrate' => $rate,
+                                                'discountpercentage' => $discountpct,
+                                                'd_netamount' => NULL,
+                                                'd_taxamount' => NULL,
+                                                'd_grossamount' => NULL,
+                                                'groupid' => NULL,
+                                                'goodid' => NULL,
+                                                'taxdisplaycategory' => $taxdisplaycategory,
+                                                'taxcategory' => "E: Excise Duty",
+                                                'taxcategoryCode' => "05",
+                                                'netamount' => sizeof($exciseduty_details) == 1? ((float)$net - (float)$exciseduty_details[0][0]['exciseTax']) : 0,
+                                                'taxrate' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRate'] : NULL,
+                                                'taxamount' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseTax'] : 0,
+                                                'grossamount' => $net, //It appears like the NET from the main tax above, serves as the GROSS for excise
+                                                'exciseunit' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseUnit'] : NULL,
+                                                'excisecurrency' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseCurrency'] : NULL,
+                                                'taxratename' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRateName'] : NULL,
+                                                'taxdescription' => "E"
+                                            );
+                                        }
                                     }                                                                        
                                 }
                                 
-                            }   
+                            } 
+                            
+                            // Should we empty exciseduty_details at this point?
+                            $this->logger->write("Api : uploadinvoice() : Emptying the excise duty array", 'r');
+                            $exciseduty_details = array();
                         }//END OF FOREACH
                         
                         //***Proceed with INVOICE logic here****//
@@ -3086,7 +4889,7 @@ Class Api{
             }
             
             
-            $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+            $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
         }
         
         
@@ -3284,7 +5087,7 @@ Class Api{
                         $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
                         
                         //return to the client
-                        $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                        $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
                         
                         $this->response = array(
                             "response" => array(
@@ -3335,7 +5138,7 @@ Class Api{
                         $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
                         
                         //return to the client
-                        $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                        $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
                         
                         $this->response = array(
                             "response" => array(
@@ -3406,7 +5209,11 @@ Class Api{
                         'creditnoteapplicationid' => NULL,
                         'refundinvoiceno' => NULL,
                         'applicationtime' => date('Y-m-d H:i:s'),
-                        'invoiceapplycategorycode' => '101' /*101-Credit Note*/
+                        'invoiceapplycategorycode' => '101', /*101-Credit Note*/
+                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                        'vatProjectId' => trim($json['PROJECTID']),
+                        'vatProjectName' => trim($json['PROJECTNAME']),
+                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE']))
                     );
                     
                     $buyer = array(
@@ -3424,7 +5231,11 @@ Class Api{
                         'citizineship' => trim($json['BUYERCITIZENSHIP']),
                         'sector' => trim($json['BUYERSECTOR']),
                         'referenceno' => trim($json['BUYERREFERENCENO']),
-                        'datasource' => $this->appsettings['WESERVICEDS']
+                        'datasource' => $this->appsettings['WESERVICEDS'],
+                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                        'vatProjectId' => trim($json['PROJECTID']),
+                        'vatProjectName' => trim($json['PROJECTNAME']),
+                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE']))
                     );
                     
                     
@@ -3498,6 +5309,13 @@ Class Api{
                      */
                     $mapped_fees = array();
                     
+                    /**
+                     * Author: francis.lubanga@gmail.com
+                     * Date: 2026-01-10
+                     * Description: We wil hold excise duty related details here.
+                     */
+                    $exciseduty_details = array();
+                    
                     if(trim($this->appsettings['CHECK_FEE_MAP_FLAG']) == '1'){
                         $this->logger->write("Utilities : uploadcreditnote() : The check fees mapping is on", 'r');
                         
@@ -3560,8 +5378,156 @@ Class Api{
                             $erpTaxRate = empty(trim($obj['TAXRATE']))? 0 : trim($obj['TAXRATE']);
                             $discount = empty(trim($obj['DISCOUNT']))? 0 : (float)trim($obj['DISCOUNT']);
                             $discountpct = empty(trim($obj['DISCOUNTPCT']))? 0 : (float)trim($obj['DISCOUNTPCT']);
+                            $lineDiscountFlag = '';
+                            if (isset($obj['DISCOUNTFLAG'])) {
+                                $lineDiscountFlag = strtoupper(trim((string)$obj['DISCOUNTFLAG']));
+                            } elseif (isset($obj['discountflag'])) {
+                                $lineDiscountFlag = strtoupper(trim((string)$obj['discountflag']));
+                            }
+
+                            if (in_array($lineDiscountFlag, array('1', 'YES', 'Y', 'TRUE'), true)) {
+                                $lineDiscountFlag = '1';
+                            } elseif (in_array($lineDiscountFlag, array('2', '0', 'NO', 'N', 'FALSE'), true)) {
+                                $lineDiscountFlag = '2';
+                            } else {
+                                $lineDiscountFlag = '';
+                            }
+
+                            // Maintainer note (2026-04-14): enforce explicit discount semantics.
+                            // When a line carries discount amount/percentage, ERP must send DISCOUNTFLAG too.
+                            // Maintainer note (2026-04-17): DISCOUNTPCT is a decimal fraction (0.25 = 25%).
+                            // For DISCOUNTFLAG=1, both DISCOUNT and DISCOUNTPCT must be non-empty and > 0.
+                            $discountRaw = isset($obj['DISCOUNT']) ? trim((string)$obj['DISCOUNT']) : '';
+                            $discountPctRaw = isset($obj['DISCOUNTPCT']) ? trim((string)$obj['DISCOUNTPCT']) : '';
+                            $discountAmountValue = ($discountRaw !== '') ? (float)$this->util->removecommasfromamount($discountRaw) : 0;
+                            $discountPctValue = ($discountPctRaw !== '') ? (float)$this->util->removecommasfromamount($discountPctRaw) : 0;
+                            $hasLineDiscount = ($discountAmountValue > 0 || $discountPctValue > 0);
+
+                            if ($discountPctRaw !== '' && $discountPctValue > 1) {
+                                $this->logger->write("Api : uploadcreditnote() : DISCOUNTPCT must be a decimal fraction for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has invalid DISCOUNTPCT. Send a decimal fraction (e.g. 0.25 for 25%).";
+                                $this->code = '-999';
+
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+
+                                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a creditnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                                $this->response = array(
+                                    "response" => array(
+                                        "responseCode" => $this->code,
+                                        "responseMessage" => $this->message
+                                    ),
+                                    "data" => array(
+                                        "INVID" => "",
+                                        "INVNO" => "",
+                                        "ISSUEDT" => "",
+                                        "FDN" => "",
+                                        "QRCODE" => "",
+                                        "REFERENCE" => ""
+                                    )
+                                );
+
+                                $len = sizeof($this->response);
+                                header ("CONTENT-LENGTH:".$len);
+                                die(json_encode($this->response));
+                                return;
+                            }
+
+                            // Maintainer note (2026-04-14): fail fast to avoid implicit flag inference.
+                            if ($hasLineDiscount && $lineDiscountFlag == '') {
+                                $this->logger->write("Api : uploadcreditnote() : DISCOUNTFLAG is required when DISCOUNT or DISCOUNTPCT is populated for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has DISCOUNT/DISCOUNTPCT but no valid DISCOUNTFLAG. Expected 1 or 2.";
+                                $this->code = '-999';
+
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+
+                                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a creditnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                                $this->response = array(
+                                    "response" => array(
+                                        "responseCode" => $this->code,
+                                        "responseMessage" => $this->message
+                                    ),
+                                    "data" => array(
+                                        "INVID" => "",
+                                        "INVNO" => "",
+                                        "ISSUEDT" => "",
+                                        "FDN" => "",
+                                        "QRCODE" => "",
+                                        "REFERENCE" => ""
+                                    )
+                                );
+
+                                $len = sizeof($this->response);
+                                header ("CONTENT-LENGTH:".$len);
+                                die(json_encode($this->response));
+                                return;
+                            }
+
+                            if ($lineDiscountFlag == '1' && ($discountAmountValue <= 0 || $discountPctValue <= 0)) {
+                                $this->logger->write("Api : uploadcreditnote() : DISCOUNT and DISCOUNTPCT are mandatory and must be > 0 when DISCOUNTFLAG=1 for product " . $obj['PRODUCTCODE'], 'r');
+                                $this->message = "The PRODUCTCODE " . $obj['PRODUCTCODE'] . " has DISCOUNTFLAG=1 but DISCOUNT and DISCOUNTPCT are missing/zero.";
+                                $this->code = '-999';
+
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+
+                                $body = '<html><body>
+                                                <p>Hello,</p></br>
+                                                <p>Your request to upload a creditnote failed with the following details;</p>
+                                                <p>Number: <b>' . $vchnumber . '</b></p>
+                                                <p>Error Code: <b>' . $this->code . '</b></p>
+                                                <p>Error Message: <b>' . $this->message . '</b></p>
+                                                </br>
+                                                <p>Regards,</p>
+                                                <p>e-TaxWare Team</p>
+                                                </body></html>';
+
+                                $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
+
+                                $this->response = array(
+                                    "response" => array(
+                                        "responseCode" => $this->code,
+                                        "responseMessage" => $this->message
+                                    ),
+                                    "data" => array(
+                                        "INVID" => "",
+                                        "INVNO" => "",
+                                        "ISSUEDT" => "",
+                                        "FDN" => "",
+                                        "QRCODE" => "",
+                                        "REFERENCE" => ""
+                                    )
+                                );
+
+                                $len = sizeof($this->response);
+                                header ("CONTENT-LENGTH:".$len);
+                                die(json_encode($this->response));
+                                return;
+                            }
                             // $taxcode = $obj['TAXCODE'];
-                            $taxcode = $obj['SALESTAXGROUP'];
+                            $taxcode = $obj['TAXCODE'];
                             //$tr->getByID($taxcode);
                             $tr->getByErpCode($taxcode);
                             $taxid = $tr->id;
@@ -3569,11 +5535,14 @@ Class Api{
                             /**
                              * Can we determine the DISCOUNT PERCENTAGE incase it is a line DISCOUNT provided?
                              */
-                            if ($discountpct == 0 && $discount > 0) {
+                            if ($lineDiscountFlag == '1') {
+                                $discountpct = $discountPctValue;
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
+                            } elseif ($discountpct == 0 && $discount > 0 && (float)$amount > 0) {
                                 $discountpct = $discount/$amount;
-                                $discount = 0;
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
                             } else {
-                                $discount = 0;
+                                $discount = ((float)$qty * (float)$unit) * $discountpct;
                             }
                             
                             if (trim($taxcode) == '' || empty($taxcode)) {
@@ -3583,7 +5552,7 @@ Class Api{
                                 //break;//exit loop
                                 
                                 //return to the client
-                                $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
                                 
                                 $body = '<html><body>
                                                 <p>Hello,</p></br>
@@ -3627,7 +5596,7 @@ Class Api{
                                     //break;//exit loop
                                     
                                     //return to the client
-                                    $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
+                                    $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);
                                     
                                     $body = '<html><body>
                                                 <p>Hello,</p></br>
@@ -3681,8 +5650,102 @@ Class Api{
                                     
                                     $this->logger->write("Api : uploadcreditnote() : The final TAXID is " . $taxid, 'r');
                                     
+                                    /**
+                                     * Date: 2026-01-11
+                                     * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                     * Description: Check for export & export service
+                                     */
+                                    //if (str_contains(strtolower($json['BUYERPLACEOFBUSI']), "uganda")) {
+                                    if (stripos(strtolower($json['BUYERPLACEOFBUSI']), "uganda") !== false) {
+                                        $this->logger->write("Api : uploadcreditnote() : This is a local invoice" , 'r');
+                                        
+                                        /**
+                                         * Date: 2026-01-09
+                                         * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                         * Description: Implement excise duty
+                                         */
+                                        
+                                        if (strlen(trim($product->exciseDutyCode)) != 0 && trim($product->exciseDutyCode) != 'NULL' && trim($product->hasexcisetax) == '101') {
+                                            $this->logger->write("Api : uploadcreditnote() : The product has excise duty", 'r');
+                                            
+                                            $exciseduty_details[] = $this->util->computeExciseDuty($this->userid_u, $product->code, $qty, $unit, $amount, $discount, $discountpct);
+                                            
+                                            $this->logger->write("Api : uploadcreditnote() : The excise duty count: " . sizeof($exciseduty_details), 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : exciseduty_details = " . json_encode($exciseduty_details), 'r');
+                                            
+                                            $this->logger->write("Api : uploadcreditnote() : itemCode = " . $exciseduty_details[0][0]['itemCode'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : exciseFlag = " . $exciseduty_details[0][0]['exciseFlag'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : categoryId = " . $exciseduty_details[0][0]['categoryId'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : categoryName = " . $exciseduty_details[0][0]['categoryName'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : exciseRate = " . $exciseduty_details[0][0]['exciseRate'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : exciseRule = " . $exciseduty_details[0][0]['exciseRule'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : exciseTax = " . $exciseduty_details[0][0]['exciseTax'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : pack = " . $exciseduty_details[0][0]['pack'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : stick = " . $exciseduty_details[0][0]['stick'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : exciseUnit = " . $exciseduty_details[0][0]['exciseUnit'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : exciseCurrency = " . $exciseduty_details[0][0]['exciseCurrency'], 'r');
+                                            $this->logger->write("Api : uploadcreditnote() : exciseRateName = " . $exciseduty_details[0][0]['exciseRateName'], 'r');
+                                            
+                                            // Adjust the amount from the ERP accordingly
+                                            $unit = (float)$unit + ((float)$exciseduty_details[0][0]['exciseTax'])/$qty;
+                                        } else {
+                                            $this->logger->write("Api : uploadcreditnote() : The product has NO excise duty", 'r');
+                                        }
+                                    } else {
+                                        $this->logger->write("Api : uploadcreditnote() : The place of business is " . $json['BUYERPLACEOFBUSI'], 'r');
+                                        
+                                        
+                                        if(strtoupper(trim($json['NONRESIDENTFLAG'])) == '1'){
+                                            $this->logger->write("Api : uploadcreditnote() : The buyer is Non-Resident", 'r');
+                                            
+                                            if(trim($json['INDUSTRYCODE']) == '112'){
+                                                $this->logger->write("Api : uploadcreditnote() : This is an export service", 'r');
+                                                $taxid = '2'; // B: Zero (0%)
+                                                
+                                                $tr->getByID($taxid);
+                                            } elseif(trim($json['INDUSTRYCODE']) == '102'){
+                                                $this->logger->write("Api : uploadcreditnote() : This is an export", 'r');
+                                                $taxid = '2'; // B: Zero (0%)
+                                                
+                                                $tr->getByID($taxid);
+                                            }
+                                            
+                                            
+                                        } else {
+                                            $this->logger->write("Api : uploadcreditnote() : The buyer is a Resident", 'r');
+                                            
+                                            if (strlen(trim($product->exciseDutyCode)) != 0 && trim($product->exciseDutyCode) != 'NULL' && trim($product->hasexcisetax) == '101') {
+                                                $this->logger->write("Api : uploadcreditnote() : The product has excise duty", 'r');
+                                                
+                                                $exciseduty_details[] = $this->util->computeExciseDuty($this->userid_u, $product->code, $qty, $unit, $amount, $discount, $discountpct);
+                                                
+                                                $this->logger->write("Api : uploadcreditnote() : The excise duty count: " . sizeof($exciseduty_details), 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : exciseduty_details = " . json_encode($exciseduty_details), 'r');
+                                                
+                                                $this->logger->write("Api : uploadcreditnote() : itemCode = " . $exciseduty_details[0][0]['itemCode'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : exciseFlag = " . $exciseduty_details[0][0]['exciseFlag'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : categoryId = " . $exciseduty_details[0][0]['categoryId'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : categoryName = " . $exciseduty_details[0][0]['categoryName'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : exciseRate = " . $exciseduty_details[0][0]['exciseRate'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : exciseRule = " . $exciseduty_details[0][0]['exciseRule'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : exciseTax = " . $exciseduty_details[0][0]['exciseTax'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : pack = " . $exciseduty_details[0][0]['pack'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : stick = " . $exciseduty_details[0][0]['stick'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : exciseUnit = " . $exciseduty_details[0][0]['exciseUnit'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : exciseCurrency = " . $exciseduty_details[0][0]['exciseCurrency'], 'r');
+                                                $this->logger->write("Api : uploadcreditnote() : exciseRateName = " . $exciseduty_details[0][0]['exciseRateName'], 'r');
+                                                
+                                                // Adjust the amount from the ERP accordingly
+                                                $unit = (float)$unit + ((float)$exciseduty_details[0][0]['exciseTax'])/$qty;
+                                            } else {
+                                                $this->logger->write("Api : uploadcreditnote() : The product has NO excise duty", 'r');
+                                            }
+                                        }
+                                    }
+                                    
                                     $taxname = $tr->name;
-                                    $taxcategory = $tr->category;
+                                    // $taxcategory = $tr->category;
+                                    $taxcategory = $tr->description;
                                     $taxdisplaycategory = $tr->displayCategoryCode;
                                     $taxdescription = $tr->description;
                                     $rate = $tr->rate? $tr->rate : $erpTaxRate;
@@ -3703,7 +5766,7 @@ Class Api{
                                         
                                         $total = ($qty * $unit);//??
                                         
-                                        $discount = ($discountpct/100) * $total;
+                                        $discount = $discountpct * $total;
                                         
                                         /**
                                          * Modification Date: 2021-01-26
@@ -3725,7 +5788,7 @@ Class Api{
                                          */
                                         $total = ($qty * $unit);
                                         
-                                        $discount = ($discountpct/100) * $total;
+                                        $discount = $discountpct * $total;
                                         
                                         /**
                                          * Modification Date: 2021-01-26
@@ -3758,11 +5821,17 @@ Class Api{
                                     $grossamount = $grossamount + $gross;
                                     $itemcount = $itemcount + 1;
                                     
-                                    if ($discount == 0) {
+                                    if ($lineDiscountFlag == '1') {
+                                        $discountflag = 'YES';
+                                    } elseif ($lineDiscountFlag == '2') {
+                                        $discountflag = 'NO';
+                                    } elseif ($discount == 0) {
                                         $discountflag = 'NO';
                                     } else {
                                         $discountflag = 'YES';
                                     }
+
+                                    $effectiveDiscountFlag = trim($discountflag) == 'NO'? '2' : '1';
                                     
                                     /**
                                      * Author: francis.lubanga@gmail.com
@@ -3813,32 +5882,37 @@ Class Api{
                                         'discounttaxrate' => $rate,
                                         'discountpercentage' => $discountpct,
                                         'ordernumber' => NULL,/*empty($ordernumber)? NULL : $ordernumber, : Commenting this out for now due to EFRIS error 1423. RRQ places the same item more than once on the same invoice. This causes error 1423. The bright light is that RRQ voids the entire invoice*/
-                                        'discountflag' => trim($discountflag) == 'NO'? '2' : '1',
+                                        'discountflag' => $effectiveDiscountFlag,
                                         'deemedflag' => (strtoupper(trim($deemedflag)) == 'NO'? '2' : '1'),
-                                        'exciseflag' => NULL,
-                                        'categoryid' => NULL,
-                                        'categoryname' => NULL,
+                                        'exciseflag' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseFlag'] : NULL,
+                                        'categoryid' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['categoryId'] : NULL,
+                                        'categoryname' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['categoryName'] : NULL,
                                         'goodscategoryid' => $product->commoditycategorycode,
                                         'goodscategoryname' => NULL,
-                                        'exciserate' => NULL,
-                                        'exciserule' => NULL,
-                                        'excisetax' => NULL,
-                                        'pack' => NULL,
-                                        'stick' => NULL,
-                                        'exciseunit' => NULL,
-                                        'excisecurrency' => NULL,
-                                        'exciseratename' => NULL,
+                                        'exciserate' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRate'] : NULL,
+                                        'exciserule' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRule'] : NULL,
+                                        'excisetax' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseTax'] : NULL,
+                                        'pack' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['pack'] : NULL,
+                                        'stick' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['stick'] : NULL,
+                                        'exciseunit' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseUnit'] : NULL,
+                                        'excisecurrency' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseCurrency'] : NULL,
+                                        'exciseratename' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRateName'] : NULL,
                                         'taxdisplaycategory' => $taxdisplaycategory,
                                         'taxcategory' => $taxcategory,
                                         'taxcategoryCode' => $tr->code,
-                                        'unitofmeasurename' => $measureunit->name
+                                        'unitofmeasurename' => $measureunit->name,
+                                        'pieceMeasureUnit' => $product->piecemeasureunit,
+                                        'nonResidentFlag' => trim($json['NONRESIDENTFLAG']),
+                                        'vatProjectId' => trim($json['PROJECTID']),
+                                        'vatProjectName' => trim($json['PROJECTNAME']),
+                                        'deliveryTermsCode' => $this->util->mapdeliverytermcode(trim($json['DELIVERYTERMCODE']))
                                     );
                                     
                                     
                                     
                                     if ($this->vatRegistered == 'Y') {
                                         $taxes[] = array(
-                                            'discountflag' => trim($discountflag) == 'NO'? '2' : '1',
+                                            'discountflag' => $effectiveDiscountFlag,
                                             'discounttotal' => $discount,
                                             'discounttaxrate' => $rate,
                                             'discountpercentage' => $discountpct,
@@ -3854,11 +5928,41 @@ Class Api{
                                             'taxrate' => $rate,
                                             'taxamount' => $tax,
                                             'grossamount' => $gross,
-                                            'exciseunit' => NULL,
-                                            'excisecurrency' => NULL,
+                                            'exciseunit' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseUnit'] : NULL,
+                                            'excisecurrency' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseCurrency'] : NULL,
                                             'taxratename' => $taxname,
                                             'taxdescription' => $taxdescription
                                         );
+                                        
+                                        /**
+                                         * Date: 2026-01-10
+                                         * Author: Francis Lubanga <francis.lubanga@gmail.com>
+                                         * Description: Add an excise duty tax block to the tax array
+                                         */
+                                        if(sizeof($exciseduty_details) == 1){
+                                            $taxes[] = array(
+                                                'discountflag' => $effectiveDiscountFlag,
+                                                'discounttotal' => $discount,
+                                                'discounttaxrate' => $rate,
+                                                'discountpercentage' => $discountpct,
+                                                'd_netamount' => NULL,
+                                                'd_taxamount' => NULL,
+                                                'd_grossamount' => NULL,
+                                                'groupid' => NULL,
+                                                'goodid' => NULL,
+                                                'taxdisplaycategory' => $taxdisplaycategory,
+                                                'taxcategory' => "E: Excise Duty",
+                                                'taxcategoryCode' => "05",
+                                                'netamount' => sizeof($exciseduty_details) == 1? ((float)$net - (float)$exciseduty_details[0][0]['exciseTax']) : 0,
+                                                'taxrate' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRate'] : NULL,
+                                                'taxamount' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseTax'] : 0,
+                                                'grossamount' => $net, //It appears like the NET from the main tax above, serves as the GROSS for excise
+                                                'exciseunit' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseUnit'] : NULL,
+                                                'excisecurrency' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseCurrency'] : NULL,
+                                                'taxratename' => sizeof($exciseduty_details) == 1? $exciseduty_details[0][0]['exciseRateName'] : NULL,
+                                                'taxdescription' => "E"
+                                            );
+                                        }
                                     }
                                 }
                                 
@@ -4169,7 +6273,7 @@ Class Api{
                 $this->code = '0099';
             }
             
-            $this->util->createerpauditlog($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);            
+            $this->createerpauditlogSafe($this->userid_u, $permission, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json), $vchnumber, $vchref, NULL, $this->code, $this->message);            
         }
         
         
@@ -4210,6 +6314,16 @@ Class Api{
         $permission = 'DOWNLOADINVOICE'; //tblpermissions
         $event = NULL; //tblevents
         $eventnotification = NULL; //tbleventnotifications
+        $invoiceid = '';
+        $invoicenumber = '';
+        $issueddate = '';
+        $fdn = '';
+        $qr = '';
+        $ref = '';
+        $appstatus = '';
+        $creditnotenumber = '';
+        $this->message = 'The operation was not successful';
+        $this->code = '1005';
         
         if ($this->errorcode) {
             $this->message = $this->errormessage;
@@ -4218,16 +6332,6 @@ Class Api{
             $body = $this->code . ' : ' . $this->message;
             $this->util->sendemailnotification_v2($this->recipientname, $this->recipientemail, $this->subject, $body, NULL, $this->apikey, $this->version);
         } else {
-            $invoiceid = '';
-            $invoicenumber = '';
-            $issueddate = '';
-            $fdn = '';
-            $qr = '';
-            $ref = '';
-            $appstatus = '';
-            $creditnotenumber = '';
-            
-            
             if(trim(date_default_timezone_get() !== trim($this->appsettings['EFRIS_TIMEZONE']))){
                 date_default_timezone_set($this->appsettings['EFRIS_TIMEZONE']);
             }
@@ -4580,7 +6684,13 @@ Class Api{
                         
                         
                     }
-                } elseif ($vchtype == 'Sales' || stripos($vchtype, 'Sales')){
+                // Maintainer note (2026-04-25 08:24 +02:00): accept both legacy ERP labels and explicit Invoice values.
+                } elseif (
+                    $vchtype == 'Sales' ||
+                    stripos($vchtype, 'Sales') !== false ||
+                    $vchtype == 'Invoice' ||
+                    stripos($vchtype, 'Invoice') !== false
+                ){
                     $this->logger->write("Api : queryinvoice() : Querying invoice started", 'r');
                     $inv_check = new DB\SQL\Mapper($this->db, 'tblinvoices');
                     $inv_check->load(array('TRIM(erpinvoiceid)=?', $erpinvoiceid));
@@ -4723,7 +6833,9 @@ Class Api{
                         
                     }
                 } else {
-                    ;
+                    $this->logger->write("Api : queryinvoice() : Unsupported voucher type supplied: " . $vchtype, 'r');
+                    $this->message = 'Unsupported voucher type';
+                    $this->code = '1006';
                 }
             } else {
                 $this->logger->write("Api : queryinvoice() : The user is not allowed to perform this function", 'r');
@@ -4741,7 +6853,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
 
@@ -4925,7 +7037,7 @@ Class Api{
             $ipaddress = trim($json['IPADDRESS']);
             $macaddress = trim($json['MACADDRESS']);
             $systemname = trim($json['SYSTEMNAME']);
-            $this->util->createerpauditlog($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
+            $this->createerpauditlogSafe($this->userid_u, $activity, $windowsuser, $ipaddress, $macaddress, $systemname, json_encode($json));
         }
         
 
@@ -4958,6 +7070,7 @@ Class Api{
      *
      */
     function beforeroute(){
+        $this->currentEndpoint = $this->resolveEndpointName();
         $this->logger->write("Api : beforeroute() : Checking client details", 'r');
         $REMOTE_ADDR = $this->f3->get('SERVER.REMOTE_ADDR');
         $REMOTE_HOST = $this->f3->get('SERVER.REMOTE_HOST');
@@ -4970,9 +7083,9 @@ Class Api{
         $this->logger->write("Api : beforeroute() : The current URL is " . $this->f3->get('SERVER.REQUEST_URI'), 'r');
         
         $url_components = parse_url($this->f3->get('SERVER.REQUEST_URI'));
-        parse_str($url_components['query'], $this->params);
+        parse_str(isset($url_components['query']) ? $url_components['query'] : '', $this->params);
         
-        $API_KEY = trim($this->params['apikey']); 
+        $API_KEY = trim(isset($this->params['apikey']) ? $this->params['apikey'] : '');
         
         $this->logger->write("Api : beforeroute() : The apikey is: " . $API_KEY, 'r');
         
@@ -4981,32 +7094,131 @@ Class Api{
         $this->logger->write("Api : beforeroute() : REMOTE_PORT = " . $REMOTE_PORT, 'r');
         $this->logger->write("Api : beforeroute() : REMOTE_USER = " . $REMOTE_USER, 'r');
         $this->logger->write("Api : beforeroute() : REDIRECT_REMOTE_USER = " . $REDIRECT_REMOTE_USER, 'r');
-        $this->logger->write("Api : beforeroute() : HTTP_X_FORWARDED_FOR = " . $HTTP_X_FORWARDED_FOR, 'r');   
+        $this->logger->write("Api : beforeroute() : HTTP_X_FORWARDED_FOR = " . $HTTP_X_FORWARDED_FOR, 'r');
         
-        //Pick the XML content from the client
+        // Maintainer note (2026-05-07 00:00 UTC): capture and log raw body early
+        // so payload-format routing decisions are traceable in api-trace/api logs.
         $this->json = file_get_contents('php://input');
         $this->logger->write("Api : beforeroute() : Raw body content is: " . $this->json, 'r');
+
+        $rawBody = trim((string)$this->json);
+        $isXmlPayload = $this->looksLikeXmlPayload($rawBody);
+        $isJsonPayload = $this->looksLikeJsonPayload($rawBody);
+        $startsLikeJson = ($rawBody !== '' && in_array(substr($rawBody, 0, 1), array('{', '['), TRUE));
         
         //Replace special characters
         /*$this->xml = htmlspecialchars_decode($this->xml, ENT_XML1);
-        $this->logger->write("Api : beforeroute() : The xml after replacing special xters" . $this->xml, 'r');*/
+         $this->logger->write("Api : beforeroute() : The xml after replacing special xters" . $this->xml, 'r');*/
         
         $json = json_decode($this->json, TRUE); //convert JSON into array
+        $jsonErrorCode = json_last_error();
+
+        if ($isXmlPayload) {
+            // Maintainer note (2026-05-07 00:00 UTC): return XML envelope for XML callers
+            // to improve compatibility with legacy client parsers and error surfacing.
+            $this->logger->write("Api : beforeroute() : XML payload detected on JSON adapter endpoint", 'r');
+            $this->logger->write(
+                "Api : beforeroute() : Payload mismatch details: expected=JSON, received=XML, endpoint=" . $this->currentEndpoint,
+                'r'
+            );
+            $this->emitGracefulPreRouteError(
+                '1090',
+                'Unsupported payload format for this endpoint. Use the Tally adapter endpoint.',
+                'xml'
+            );
+        }
+
+        /**
+             * Modification Date: 2026-05-07
+             * Modified By: Francis Lubanga
+             * Description: Add a strict unsupported-format catch-all for non-XML/non-JSON payloads.
+             */
+        if ($rawBody !== '' && !$isXmlPayload && !$isJsonPayload && !$startsLikeJson) {
+            $this->logger->write(
+                "Api : beforeroute() : Payload mismatch details: expected=JSON, received=UNSUPPORTED_FORMAT, endpoint=" . $this->currentEndpoint,
+                'r'
+            );
+            $this->emitGracefulPreRouteError(
+                '1093',
+                'Unsupported payload format. This endpoint expects JSON request bodies.',
+                'json'
+            );
+        }
+
+        if ($rawBody !== '' && !$isXmlPayload && $startsLikeJson && $jsonErrorCode !== JSON_ERROR_NONE) {
+            /**
+                 * Modification Date: 2026-05-07
+                 * Modified By: Francis Lubanga
+                 * Description: Keep malformed JSON on a dedicated fail-fast code path.
+                 */
+            $this->logger->write("Api : beforeroute() : Invalid JSON payload received. JSON decode error code = " . $jsonErrorCode, 'r');
+            $this->emitGracefulPreRouteError(
+                '1091',
+                'Unsupported or malformed payload. This endpoint expects a valid JSON request body.',
+                'json'
+            );
+        }
+
+        // Maintainer note (2026-04-14): requests like GET /testapi can arrive
+        // without a JSON body; normalize to an empty array to avoid Countable
+        // warnings and keep validation behavior deterministic.
+        if (!is_array($json)) {
+            $json = array();
+        }
         
-        if(sizeof($json) == 0 && empty($API_KEY)){
+        if(count($json) == 0 && empty($API_KEY)){
             
             $this->message = 'No parameters were sent!';
             $this->code = '1000';
             
             $this->errorcode = '1000';
-            $this->errormessage = 'No parameters were sent!';                   
+            $this->errormessage = 'No parameters were sent!';
             
             return;
-        /*} elseif (!empty($API_KEY)) {
-            //The API KEY was sent as part of a GET call
-            $this->logger->write("Api : beforeroute() : The apikey was sent in the GET call", 'r');
-            $this->logger->write("Api : beforeroute() : The apikey is: " . $API_KEY, 'r');*/
+            /*} elseif (!empty($API_KEY)) {
+             //The API KEY was sent as part of a GET call
+             $this->logger->write("Api : beforeroute() : The apikey was sent in the GET call", 'r');
+             $this->logger->write("Api : beforeroute() : The apikey is: " . $API_KEY, 'r');*/
         } else {
+            /**
+             * Author: Francis Lubanga <francis.lubanga@gmail.com>
+             * Date: 2026-01-09
+             * Description: Include a check for TIN of the integrated organisation
+             */
+            if (isset($json['ORGTIN'])){
+                if(empty($json['ORGTIN'])){
+                    $this->message = 'No company TIN was specified';
+                    $this->code = '7650';
+                    
+                    $this->errorcode = '7650';
+                    $this->errormessage = 'No company TIN was specified';
+                    
+                    return;
+                } else {
+                    $companydetails = new organisations($this->db);
+                    $companydetails->getByID($this->appsettings['SELLER_RECORD_ID']);
+                    
+                    if (trim($json['ORGTIN']) == trim($companydetails->tin)) {
+                        $this->logger->write("Api : beforeroute() : The supplied company TIN " . trim($json['ORGTIN']) . " and the integrated TIN " . $companydetails->tin . " match", 'r');
+                    }else {
+                        $this->message = 'The supplied company TIN and the integrated TIN do NOT match!';
+                        $this->code = '7651';
+                        
+                        $this->errorcode = '7651';
+                        $this->errormessage = 'The supplied company TIN and the integrated TIN do NOT match!';
+                        return;
+                    }
+                }
+            } else {
+                $this->message = 'No company TIN was specified';
+                $this->code = '7650';
+                
+                $this->errorcode = '7650';
+                $this->errormessage = 'No company TIN was specified';
+                return;
+            }
+            /*************END************/
+            
             $this->logger->write("Api : beforeroute() : The apikey is: " . $json['APIKEY'], 'r');
             
             if ($json['APIKEY']) {
@@ -5014,7 +7226,7 @@ Class Api{
             } else {
                 $this->apikey = $API_KEY;
             }
-
+            
             $this->logger->write("Api : beforeroute() : The new apikey is: " . $this->apikey, 'r');
             
             if(empty($this->apikey)){
@@ -5048,10 +7260,10 @@ Class Api{
                     } else {
                         $this->logger->write("Api : beforeroute() : The versions do not match", 'r');
                         $this->code = '1003';
-                        $this->message = 'The plugin version does not match. Please contact your system administratoro!';
+                        $this->message = 'The plugin version does not match. Please contact your system administrator!';
                         
                         $this->errorcode = '1003';
-                        $this->errormessage = 'The plugin version does not match. Please contact your system administratoro!';
+                        $this->errormessage = 'The plugin version does not match. Please contact your system administrator!';
                         
                         return;
                     }
@@ -5111,7 +7323,7 @@ Class Api{
                         $this->logger->write("Api : beforeroute() : The tax payer is VAT registered", 'r');
                         $this->vatRegistered = 'Y';
                     }
-                                                            
+                    
                     //Clear the response
                     $this->message = NULL;
                     $this->code = NULL;
@@ -5181,7 +7393,7 @@ Class Api{
         
         $this->db = $db;
         
-        $logger = new Log('api.log');
+        $logger = new SmartLogger('api.log', 'api-trace.log');
         $this->logger = $logger;
         
         $data = array();
@@ -5208,6 +7420,8 @@ Class Api{
         
         $util = new Utilities();
         $this->util = $util;
+
+        register_shutdown_function(array($this, 'ensureEndpointAuditLog'));
         
     }
 }
